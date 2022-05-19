@@ -156,6 +156,10 @@
   <ItemGroup>
     <ClCompile Include="UE_QueueType_DevEnv.cpp" />
   </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Queue.h" />
+    <ClInclude Include="UEInterface.h" />
+  </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
