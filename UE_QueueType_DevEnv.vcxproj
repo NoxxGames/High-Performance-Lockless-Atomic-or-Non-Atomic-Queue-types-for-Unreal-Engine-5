@@ -157,6 +157,7 @@
     <ClCompile Include="UE_QueueType_DevEnv.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="LocalStuff\My_MpmcQueue.h" />
     <ClInclude Include="Queue.h" />
     <ClInclude Include="UEInterface.h" />
   </ItemGroup>

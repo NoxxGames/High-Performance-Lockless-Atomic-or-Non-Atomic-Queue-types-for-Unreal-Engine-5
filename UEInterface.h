@@ -1,6 +1,7 @@
 ﻿#pragma once
 
-#define FORCEINLINE __forceinline 
+#define FORCEINLINE __forceinline
+#define PLATFORM_CACHE_LINE_SIZE 64
 
 typedef int8_t      int8;
 typedef int16_t     int16;
