@@ -73,11 +73,14 @@ public:
     virtual FBoundedQueueBase& operator=(const FBoundedQueueBase& other)      = delete;
     virtual FBoundedQueueBase& operator=(FBoundedQueueBase&& other) noexcept  = delete;
 
-    virtual FORCEINLINE bool Push(const FElement& NewElement) = 0;
-    virtual FORCEINLINE bool Pop(const FElement& OutElement) = 0;
+    virtual FORCEINLINE bool    Push(const FElement& NewElement) = 0;
+    virtual FORCEINLINE bool    Pop(const FElement& OutElement) = 0;
+    virtual FORCEINLINE uint64  Size() const = 0;
+    virtual FORCEINLINE bool    Empty() const = 0;
+    virtual FORCEINLINE bool    Full() const = 0;
 
 protected:
-    class CACHE_ALIGN FBufferNodeBase
+    class CACHE_ALIGN FBufferNode
     {
     protected:
         FElement Data;
@@ -86,7 +89,7 @@ protected:
         uint8 PaddingBytes1[QUEUE_PADDING_BYTES(sizeof(FSpinLock))] = {};
 
     public:
-        FBufferNodeBase()
+        FBufferNode()
             : SpinLock()
         {
         }
@@ -107,14 +110,13 @@ protected:
             });
         }
     };
-
-    template<class TBufferNodeType = FBufferNodeBase>
+    
     class CACHE_ALIGN FBufferData
     {
     protected:
         const uint64 IndexMask;
-        TBufferNodeType* CircularBuffer;
-        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(uint64) - sizeof(TBufferNodeType*))] = {};
+        FBufferNode* CircularBuffer;
+        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(uint64) - sizeof(void*))] = {};
         
     public:
         FBufferData()
@@ -123,10 +125,10 @@ protected:
             /** Contigiously allocate the buffer.
               * The theory behind using calloc and not aligned_alloc
               * or equivelant, is that the memory should still be aligned,
-              * since calloc will align by the type size, which in this case
+              * since calloc will align by the type size, which in this caseS
               * is a multiple of the cache line size.
              */
-            CircularBuffer = (TBufferNodeType*)calloc(IndexMask + 1, sizeof(TBufferNodeType));
+            CircularBuffer = (FBufferNode*)calloc(IndexMask + 1, sizeof(FBufferNode));
         }
 
         ~FBufferData()
@@ -159,16 +161,19 @@ private:
             
         return N;
     }
+
+protected:
+    FBufferData BufferData;
 };
 
-template<typename T>
-class FBoundedQueueMpmc final : public FBoundedQueueBase<T>
+template<typename T, uint64 TQueueSize = 0>
+class FBoundedQueueMpmc final : public FBoundedQueueBase<T, TQueueSize>
 {
     using FElement = T;
     
 public:
     FBoundedQueueMpmc()
-        : FBoundedQueueBase<T>()
+        : FBoundedQueueBase()
     {
     }
 
@@ -181,34 +186,46 @@ public:
     FBoundedQueueMpmc& operator=(const FBoundedQueueMpmc& other)        = delete;
     FBoundedQueueMpmc& operator=(FBoundedQueueMpmc&& other) noexcept    = delete;
 
-    FORCEINLINE bool Push(const FElement& NewElement) override
+    virtual FORCEINLINE bool Push(const FElement& NewElement) override
     {
         return false;
     }
-    FORCEINLINE bool Pop(const FElement& OutElement) override
+    
+    virtual FORCEINLINE bool Pop(const FElement& OutElement) override
     {
         
         return false;
     }
 
-protected:
-    struct FBufferNode : public FBoundedQueueBase<T>::FBufferNodeBase
+    virtual FORCEINLINE uint64 Size() const override
     {
-        FBufferNode()
-            : FBoundedQueueBase<T>::FBufferNodeBase()
-        {
-        }
-    };
-};
+        return 0;
+    }
+    
+    virtual FORCEINLINE bool Empty() const override
+    {
+        return false;
+    }
+    
+    virtual FORCEINLINE bool Full() const override
+    {
+        return false;
+    }
 
-/* sub-type inherritance example
-class Other : FQueueBase<int>
-{
-    struct Testing2 : Testing
+private:
+    struct FCursorData
     {
-        bool Tesssst() <--- virtual function
+        uint64 ProducerCursor;
+        uint64 ConsumerCursor;
+        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(uint64) * 2)] = {};
+
+        FCursorData(const uint64 InProducerCursor = 0, const uint64 InConsumerCursor = 0)
+            : ProducerCursor(InProducerCursor),
+            ConsumerCursor(InConsumerCursor)
         {
-            return false;
         }
     };
-};*/
+
+private:
+    CACHE_ALIGN std::atomic<FCursorData> CursorData;
+};
