@@ -12,6 +12,7 @@
 #define HARDWARE_PAUSE() _mm_pause(); // TODO: other platforms
 
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
+#define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
 
 namespace QueueTypes
 {
@@ -54,13 +55,14 @@ namespace QueueTypes
     };
 }
 
-template<typename T>
+template<typename T, uint64 TQueueSize = 0>
 class FBoundedQueueBase
 {
     using FElement = T;
     using FSpinLock = QueueTypes::FSpinLock;
 
     /* TODO: static_asserts */
+    static_assert(TQueueSize > 0, ""); // TODO
     
 public:
     FBoundedQueueBase()             = default;
@@ -71,11 +73,11 @@ public:
     virtual FBoundedQueueBase& operator=(const FBoundedQueueBase& other)      = delete;
     virtual FBoundedQueueBase& operator=(FBoundedQueueBase&& other) noexcept  = delete;
 
-    virtual FORCEINLINE bool FASTCALL Push(const FElement& NewElement) = 0;
-    virtual FORCEINLINE bool FASTCALL Pop(const FElement& OutElement) = 0;
+    virtual FORCEINLINE bool Push(const FElement& NewElement) = 0;
+    virtual FORCEINLINE bool Pop(const FElement& OutElement) = 0;
 
 protected:
-    class FBufferNodeBase
+    class CACHE_ALIGN FBufferNodeBase
     {
     protected:
         FElement Data;
@@ -89,7 +91,7 @@ protected:
         {
         }
 
-        void GetData(const FElement& Out)
+        FORCEINLINE void GetData(const FElement& Out)
         {
             this->SpinLock.UseLockLambda([&]()
             {
@@ -97,7 +99,7 @@ protected:
             });
         }
         
-        void SetData(const FElement& NewData)
+        FORCEINLINE void SetData(const FElement& NewData)
         {
             this->SpinLock.UseLockLambda([&]()
             {
@@ -105,6 +107,58 @@ protected:
             });
         }
     };
+
+    template<class TBufferNodeType = FBufferNodeBase>
+    class CACHE_ALIGN FBufferData
+    {
+    protected:
+        const uint64 IndexMask;
+        TBufferNodeType* CircularBuffer;
+        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(uint64) - sizeof(TBufferNodeType*))] = {};
+        
+    public:
+        FBufferData()
+            : IndexMask(RoundQueueSizeUpToNearestPowerOfTwo() - 1)
+        {
+            /** Contigiously allocate the buffer.
+              * The theory behind using calloc and not aligned_alloc
+              * or equivelant, is that the memory should still be aligned,
+              * since calloc will align by the type size, which in this case
+              * is a multiple of the cache line size.
+             */
+            CircularBuffer = (TBufferNodeType*)calloc(IndexMask + 1, sizeof(TBufferNodeType));
+        }
+
+        ~FBufferData()
+        {
+            if(CircularBuffer)
+            {
+                free(CircularBuffer);
+            }
+        }
+
+        FBufferData(const FBufferData& other)                           = delete;
+        FBufferData(FBufferData&& other) noexcept                       = delete;
+        virtual FBufferData& operator=(const FBufferData& other)        = delete;
+        virtual FBufferData& operator=(FBufferData&& other) noexcept    = delete;
+    };
+
+private:
+    FORCEINLINE uint64 RoundQueueSizeUpToNearestPowerOfTwo()
+    {
+        uint64 N = TQueueSize;
+
+        N--;
+        N |= N >> 1;
+        N |= N >> 2;
+        N |= N >> 4;
+        N |= N >> 8;
+        N |= N >> 16;
+        N |= N >> 32;
+        N++;
+            
+        return N;
+    }
 };
 
 template<typename T>
@@ -127,11 +181,11 @@ public:
     FBoundedQueueMpmc& operator=(const FBoundedQueueMpmc& other)        = delete;
     FBoundedQueueMpmc& operator=(FBoundedQueueMpmc&& other) noexcept    = delete;
 
-    FORCEINLINE bool FASTCALL Push(const FElement& NewElement) override
+    FORCEINLINE bool Push(const FElement& NewElement) override
     {
         return false;
     }
-    FORCEINLINE bool FASTCALL Pop(const FElement& OutElement) override
+    FORCEINLINE bool Pop(const FElement& OutElement) override
     {
         
         return false;
