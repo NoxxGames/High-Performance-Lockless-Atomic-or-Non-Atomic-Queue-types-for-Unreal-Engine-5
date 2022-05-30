@@ -17,7 +17,7 @@ int main(int argc, char* argv[])
     /* TODO: Understand what is meant by "optimistic" in the AtomicQueueType */
     
     OpenNanoTimer MyTimer;
-    FBoundedQueueMpmc<int, 100000> MyQueue;
+    FBoundedQueueBase<int, 100000> MyQueue;
     //atomic_queue::AtomicQueueB2<int, std::allocator<int>,true, true, true> MyOtherQueue(1000000);
     
     
@@ -41,7 +41,7 @@ int main(int argc, char* argv[])
             int ValueToAdd = 0;
             for(int j = 0; j < ELEMENTS_TO_PROCESS / 2; ++j)
             {
-                MyQueue.Pop(ValueToAdd);
+                MyQueue.Pop_Cached(ValueToAdd);
                 //MyOtherQueue.try_pop(ValueToAdd);
             }
 
