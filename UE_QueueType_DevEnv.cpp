@@ -1,10 +1,12 @@
 #include <thread>
 #include <atomic>
 
+#include "Queue.h"
+#include "LocalStuff/AtomicQueue.h"
 #include "LocalStuff/MyTimer.h"
 #include "LocalStuff/My_MpmcQueue.h"
 
-#define CORE_COUNT 6
+#define CORE_COUNT 16
 
 #define ELEMENTS_TO_PROCESS (1000000 / CORE_COUNT)
 
@@ -15,7 +17,9 @@ int main(int argc, char* argv[])
     /* TODO: Understand what is meant by "optimistic" in the AtomicQueueType */
     
     OpenNanoTimer MyTimer;
-    bounded_circular_mpmc_queue<int, 1024000> MyQueue;
+    FBoundedQueueMpmc<int, 100000> MyQueue;
+    //atomic_queue::AtomicQueueB2<int, std::allocator<int>,true, true, true> MyOtherQueue(1000000);
+    
     
     for(int i = 0; i < CORE_COUNT / 2; ++i)
     {
@@ -24,7 +28,8 @@ int main(int argc, char* argv[])
             const int ValueToAdd = 256;
             for(int j = 0; j < ELEMENTS_TO_PROCESS / 2; ++j)
             {
-                MyQueue.push(ValueToAdd);
+                MyQueue.Push_Cached(ValueToAdd);
+                //MyOtherQueue.try_push(ValueToAdd);
             }
         }).detach();
     }
@@ -36,7 +41,8 @@ int main(int argc, char* argv[])
             int ValueToAdd = 0;
             for(int j = 0; j < ELEMENTS_TO_PROCESS / 2; ++j)
             {
-                MyQueue.pop(ValueToAdd);
+                MyQueue.Pop(ValueToAdd);
+                //MyOtherQueue.try_pop(ValueToAdd);
             }
 
             ConsumersComplete.fetch_add(1, std::memory_order_seq_cst);
