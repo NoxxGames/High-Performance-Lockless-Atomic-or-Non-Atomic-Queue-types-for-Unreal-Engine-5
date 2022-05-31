@@ -8,11 +8,27 @@ Currently a work in progress. Everything is contained within one type for easy b
 
 Queue type is in Queue.h. All code temporarily inside FBoundedQueueBase.
 
+/
+
+/
+
+/
+
+/
+
 CURRENT VERSIONS
+
   Using cursors stored in their own cache lines.
+  
   Using cursors stored in their own cache lines, and a shared cached copy of the cursors.
+  
   Using cursors stored in their own cache lines, and individual cached copies of the curors.
-TODO VERSIONS:
+  
+TODO VERSIONS
+
   Using cursors stored in the same cache line as each other.
+  
   Using cursors stored in the same cache line as each other, and a shared cached copy of the cursors.
+  
   Using cursors stored in the same cache line as each other, and individual cached copies of the curors.
+  
