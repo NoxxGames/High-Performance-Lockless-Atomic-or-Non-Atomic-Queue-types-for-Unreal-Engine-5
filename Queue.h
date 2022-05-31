@@ -9,7 +9,7 @@
 #include "UEInterface.h"
 
 #define FASTCALL __fastcall // pointles on x64
-#define HARDWARE_PAUSE() _mm_pause(); // TODO: other platforms
+#define HARDWARE_PAUSE() std::this_thread::yield(); // TODO: other platforms
 
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
@@ -91,7 +91,7 @@ public:
     virtual FBoundedQueueBase& operator=(FBoundedQueueBase&& other) noexcept  = delete;
 
 protected:
-    class CACHE_ALIGN FBufferNode
+    class FBufferNode
     {
     public:
         FElement Data;
@@ -122,19 +122,25 @@ protected:
         }
     };
     
-    class CACHE_ALIGN FBufferData
+    class FBufferData
     {
     public:
-        const uint64 IndexMaskUtility;
-        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(uint64))] = {};
+        /** Both IndexMask & CircularBuffer data are only accessed at the same time.
+          * This results in true-sharing.
+         */
         const uint64 IndexMask;
         FBufferNode* CircularBuffer;
-        uint8 PaddingBytes1[QUEUE_PADDING_BYTES((sizeof(uint64) * 2) - sizeof(void*))] = {};
+        uint8 PaddingBytes0[QUEUE_PADDING_BYTES((sizeof(uint64) * 2) - sizeof(void*))] = {};
+        /** A Secondary index mask used for all cases except when accessing the CircularBuffer.
+          * This extra index mask helps to avoid false-sharing.
+         */
+        const uint64 IndexMaskUtility;
+        uint8 PaddingBytes1[QUEUE_PADDING_BYTES(sizeof(uint64))] = {};
         
     public:
         FBufferData()
-            : IndexMaskUtility(RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize) - 1),
-            IndexMask(IndexMaskUtility)
+            : IndexMask(RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize) - 1),
+            IndexMaskUtility(IndexMask)
         {
             /** Contigiously allocate the buffer.
               * The theory behind using calloc and not aligned_alloc
@@ -165,7 +171,7 @@ public:
     {
         FCursor CurrentProducerCursor;
         
-        while(true)
+        for(;;)
         {
             CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
             const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
@@ -198,7 +204,7 @@ public:
     {
         FCursor CurrentConsumerCursor;
         
-        while(true)
+        for(;;)
         {
             const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
             CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
@@ -231,7 +237,7 @@ public:
     {
         FCursorDataCache CurrentCursorDataCache;
         
-        while(true)
+        for(;;)
         {
             CurrentCursorDataCache = CursorDataCache.Load(CursorDataLoadOrder);
 
@@ -241,10 +247,9 @@ public:
                 return false;
             }
 
-            const uint64 DesiredProducerCursorValue = CurrentCursorDataCache.ProducerCursor +1;
-            FCursor CurrentProducerCursor = CurrentCursorDataCache.ProducerCursor;
+            const uint64 DesiredProducerCursorValue = CurrentCursorDataCache.ProducerCursor + 1;
             
-            if(ProducerCursor.compare_exchange_weak(CurrentProducerCursor,
+            if(ProducerCursor.compare_exchange_weak(CurrentCursorDataCache.ProducerCursor,
                 DesiredProducerCursorValue,
                 std::memory_order_release, std::memory_order_relaxed))
             {
@@ -267,7 +272,7 @@ public:
     {
         FCursorDataCache CurrentCursorDataCache;
         
-        while(true)
+        for(;;)
         {
             CurrentCursorDataCache = CursorDataCache.Load(CursorDataLoadOrder);
 
@@ -278,9 +283,8 @@ public:
             }
 
             const uint64 DesiredConsumerCursorValue = CurrentCursorDataCache.ConsumerCursor + 1;
-            FCursor CurrentConsumerCursor = CurrentCursorDataCache.ConsumerCursor;
             
-            if(ConsumerCursor.compare_exchange_weak(CurrentConsumerCursor,
+            if(ConsumerCursor.compare_exchange_weak(CurrentCursorDataCache.ConsumerCursor,
                 DesiredConsumerCursorValue,
                 std::memory_order_release, std::memory_order_relaxed))
             {
@@ -303,7 +307,7 @@ public:
     {
         FCursor CurrentProducerCursorCached;
         
-        while(true)
+        for(;;)
         {
             CurrentProducerCursorCached = ProducerCursorCache.load(CursorDataLoadOrder);
             const FCursor CurrentConsumerCursorCached = ConsumerCursorCache.load(CursorDataLoadOrder);
@@ -315,9 +319,8 @@ public:
             }
 
             const uint64 DesiredProducerCursorValue = CurrentProducerCursorCached + 1;
-            FCursor CurrentProducerCursor = CurrentProducerCursorCached;
             
-            if(ProducerCursor.compare_exchange_weak(CurrentProducerCursor,
+            if(ProducerCursor.compare_exchange_weak(CurrentProducerCursorCached,
                 DesiredProducerCursorValue,
                 std::memory_order_release, std::memory_order_relaxed))
             {
@@ -338,8 +341,35 @@ public:
     virtual FORCEINLINE bool Pop_Cached_Individual(FElement& OutElement,
         const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
     {
+        FCursor CurrentConsumerCursorCached;
+        
+        for(;;)
+        {
+            const FCursor CurrentProducerCursorCached = ProducerCursorCache.load(CursorDataLoadOrder);
+            CurrentConsumerCursorCached = ConsumerCursorCache.load(CursorDataLoadOrder);
 
+            if((CurrentProducerCursorCached & BufferData.IndexMaskUtility)
+                == (CurrentConsumerCursorCached & BufferData.IndexMaskUtility))
+            {
+                return false;
+            }
 
+            const uint64 DesiredConsumerCursorValue = CurrentConsumerCursorCached + 1;
+            
+            if(ProducerCursor.compare_exchange_weak(CurrentConsumerCursorCached,
+                DesiredConsumerCursorValue,
+                std::memory_order_release, std::memory_order_relaxed))
+            {
+                ConsumerCursorCache.store(std::memory_order_release);
+                break;
+            }
+
+            HARDWARE_PAUSE();
+        }
+
+        BufferData.CircularBuffer[
+            CurrentConsumerCursorCached & BufferData.IndexMask]
+            .GetData(OutElement);
         
         return true;
     }
@@ -394,7 +424,7 @@ protected:
     };
 
 protected:
-    FBufferData BufferData;
+    CACHE_ALIGN FBufferData BufferData;
     
     /* Used in all versions of push/pop */
     CACHE_ALIGN std::atomic<FCursor> ProducerCursor;
