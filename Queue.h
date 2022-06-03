@@ -14,47 +14,6 @@
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
 
-namespace QueueTypes
-{
-    /**
-     * Simple, efficient spin-lock implementation.
-     * A function that takes a void lambda function can be used to
-     * conveiniently do something which will be protected by the lock.
-     * @cite Credit to Erik Rigtorp https://rigtorp.se/spinlock/
-    */
-    class FSpinLock
-    {
-        std::atomic<bool> LockFlag;
-
-    public:
-        FSpinLock()
-            : LockFlag{false}
-        {
-        }
-
-        void UseLockLambda(const std::function<void()>& Functor)
-        {
-            for(;;)
-            {
-                if(!LockFlag.exchange(true, std::memory_order_acquire))
-                {
-                    break;
-                }
-
-                while(LockFlag.load(std::memory_order_relaxed))
-                {
-                    HARDWARE_PAUSE();
-                }
-            }
-
-            // Do the work
-            Functor();
-
-            LockFlag.store(false, std::memory_order_release);
-        } 
-    };
-}
-
 constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
 {
     uint64 N = QueueSize;
@@ -72,53 +31,43 @@ constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
 }
 
 template<typename T, uint64 TQueueSize = 0>
-class FBoundedQueueBase
+class FBoundedQueueBenchmarking
 {
     using FElement = T;
-    using FSpinLock = QueueTypes::FSpinLock;
     using FCursor = uint64;
 
     /* TODO: static_asserts */
     static_assert(TQueueSize > 0, "");
     
 public:
-    FBoundedQueueBase()             = default;
-    virtual ~FBoundedQueueBase()    = default;
+    FBoundedQueueBenchmarking()             = default;
+    virtual ~FBoundedQueueBenchmarking()    = default;
 
-    FBoundedQueueBase(const FBoundedQueueBase& other)                         = delete;
-    FBoundedQueueBase(FBoundedQueueBase&& other) noexcept                     = delete;
-    virtual FBoundedQueueBase& operator=(const FBoundedQueueBase& other)      = delete;
-    virtual FBoundedQueueBase& operator=(FBoundedQueueBase&& other) noexcept  = delete;
+    FBoundedQueueBenchmarking(const FBoundedQueueBenchmarking& other)                         = delete;
+    FBoundedQueueBenchmarking(FBoundedQueueBenchmarking&& other) noexcept                     = delete;
+    virtual FBoundedQueueBenchmarking& operator=(const FBoundedQueueBenchmarking& other)      = delete;
+    virtual FBoundedQueueBenchmarking& operator=(FBoundedQueueBenchmarking&& other) noexcept  = delete;
 
 protected:
     class FBufferNode
     {
     public:
-        FElement Data;
-        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(T))] = {};
-        FSpinLock SpinLock;
-        uint8 PaddingBytes1[QUEUE_PADDING_BYTES(sizeof(FSpinLock))] = {};
+        std::atomic<FElement> Data;
+        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(std::atomic<FElement>))] = {};
 
     public:
         FBufferNode()
-            : SpinLock()
         {
         }
 
         FORCEINLINE void GetData(FElement& Out)
         {
-            this->SpinLock.UseLockLambda([&]()
-            {
-                Out = this->Data;
-            });
+            Out = Data.load(std::memory_order_acquire);
         }
         
         FORCEINLINE void SetData(const FElement& NewData)
         {
-            this->SpinLock.UseLockLambda([&]()
-            {
-                this->Data = NewData;
-            });
+            Data.store(NewData, std::memory_order_release);
         }
     };
     
@@ -128,13 +77,13 @@ protected:
         /** Both IndexMask & CircularBuffer data are only accessed at the same time.
           * This results in true-sharing.
          */
-        const uint64 IndexMask;
+        const volatile uint64 IndexMask;
         FBufferNode* CircularBuffer;
         uint8 PaddingBytes0[QUEUE_PADDING_BYTES((sizeof(uint64) * 2) - sizeof(void*))] = {};
         /** A Secondary index mask used for all cases except when accessing the CircularBuffer.
           * This extra index mask helps to avoid false-sharing.
          */
-        const uint64 IndexMaskUtility;
+        const volatile uint64 IndexMaskUtility;
         uint8 PaddingBytes1[QUEUE_PADDING_BYTES(sizeof(uint64))] = {};
         
     public:
