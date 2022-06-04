@@ -4,7 +4,6 @@
 #include "Queue.h"
 #include "LocalStuff/AtomicQueue.h"
 #include "LocalStuff/MyTimer.h"
-#include "LocalStuff/My_MpmcQueue.h"
 
 #define CORE_COUNT 16
 
@@ -14,14 +13,14 @@ std::atomic<int> ConsumersComplete = {0};
 
 using FBenchType = int;
 
-#define BENCH_START_QUEUE_SIZE      128
-#define BENCH_MAX_QUEUE_SIZE        1000000
+//#define BENCH_START_QUEUE_SIZE      128
+//#define BENCH_MAX_QUEUE_SIZE        1000000
+//#define BENCH_START_THREAD_COUNT    2
+//#define BENCH_MAX_THREAD_COUNT      32
+//#define BENCH_START_CYCLE_COUNT     16
+//#define BENCH_MAX_CYCLE_COUNT       1000000
 
-#define BENCH_START_THREAD_COUNT    2
-#define BENCH_MAX_THREAD_COUNT      32
-
-#define BENCH_START_CYCLE_COUNT     16
-#define BENCH_MAX_CYCLE_COUNT       1000000
+#define BENCH_QUEUE_SIZE            1000000
 
 #define QueueVar                    MyQueue
 #define PushFunction(_ELEMENT_)     Push((_ELEMENT_))
@@ -32,7 +31,7 @@ using FBenchType = int;
 
 namespace QBenchmarks
 {
-    static FBoundedQueueBenchmarking<int, 100000> MyQueue;
+    static FBoundedQueueBenchmarking<FBenchType, BENCH_QUEUE_SIZE> MyQueue;
 
     static std::atomic<int> ThreadsComplete = {0};
 
@@ -78,7 +77,7 @@ namespace QBenchmarks
             });
         }
 
-        WaitForCompletion(ThreadCount);
+        WaitForCompletion(ThreadCount * 2);
     }
 
     static FORCEINLINE void NoDelayHighProducerContentionRegular(const int ThreadCount, const int CycleCount,
@@ -98,14 +97,15 @@ namespace QBenchmarks
 
         CreateThreadLambda([&]() // consumer
         {
-            for(int j = 0; j < CycleCount; ++j)
+            const int AdjustedCycleCount = CycleCount * ThreadCount;
+            for(int j = 0; j < AdjustedCycleCount; ++j)
             {
                 FBenchType PoppedValue = 0;
                 QueueVar.PopFunction(PoppedValue);
             }
         });
 
-        WaitForCompletion(ThreadCount);
+        WaitForCompletion(ThreadCount + 1);
     }
 
     static FORCEINLINE void NoDelayHighConsumerContentionRegular(const int ThreadCount, const int CycleCount,
@@ -124,7 +124,8 @@ namespace QBenchmarks
         {
             CreateThreadLambda([&]() // consumer
             {
-                for(int j = 0; j < CycleCount; ++j)
+                const int AdjustedCycleCount = CycleCount * ThreadCount;
+                for(int j = 0; j < AdjustedCycleCount; ++j)
                 {
                     FBenchType PoppedValue = 0;
                     QueueVar.PopFunction(PoppedValue);
@@ -132,59 +133,13 @@ namespace QBenchmarks
             });
         }
 
-        WaitForCompletion(ThreadCount);
+        WaitForCompletion(ThreadCount + 1);
     }
 }
 
 int main(int argc, char* argv[])
 {
+    QBenchmarks::NoDelayHighContentionRegular(CORE_COUNT, ELEMENTS_TO_PROCESS);
     
-    OpenNanoTimer MyTimer;
-    FBoundedQueueBenchmarking<int, 100000> MyQueue;
-    //atomic_queue::AtomicQueueB2<int, std::allocator<int>,true, true, true> MyOtherQueue(1000000);
-    
-
-    // QBenchmarks::NoDelayHighContentionBenchmarkRegular(2, 1000000);
-    
-    for(int i = 0; i < CORE_COUNT / 2; ++i)
-    {
-        std::thread([&]()
-        {
-            const int ValueToAdd = 256;
-            for(int j = 0; j < ELEMENTS_TO_PROCESS / 2; ++j)
-            {
-                MyQueue.Push_Cached(ValueToAdd);
-                //MyOtherQueue.try_push(ValueToAdd);
-            }
-        }).detach();
-    }
-
-    for(int i = 0; i < CORE_COUNT / 2; ++i)
-    {
-        std::thread([&]()
-        {
-            int ValueToAdd = 0;
-            for(int j = 0; j < ELEMENTS_TO_PROCESS / 2; ++j)
-            {
-                MyQueue.Pop_Cached(ValueToAdd);
-                //MyOtherQueue.try_pop(ValueToAdd);
-            }
-
-            ConsumersComplete.fetch_add(1, std::memory_order_seq_cst);
-        }).detach();
-    }
-    
-    MyTimer.StartTimer();
-    
-    while(ConsumersComplete.load(std::memory_order_relaxed) < (CORE_COUNT / 2))
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-
-    MyTimer.EndTimer();
-    
-    const long double Ms = MyTimer.GetNanoseconds();
-    printf("Time Taken: %Lf\n", Ms);
-    printf("Per Element avg: %Lf\n", (Ms / 1000000));
-    
-    system("pause");
     return 0;
 }
