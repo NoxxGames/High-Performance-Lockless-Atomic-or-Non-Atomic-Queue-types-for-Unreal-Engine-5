@@ -111,7 +111,7 @@ protected:
           * This results in true-sharing.
          */
         const volatile uint64 IndexMask;
-        FBufferNode* CircularBuffer;
+        FBufferNode CircularBuffer[RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize)];
         uint8 PaddingBytes0[QUEUE_PADDING_BYTES((sizeof(uint64) * 2) - sizeof(void*))] = {};
         /** A Secondary index mask used for all cases except when accessing the CircularBuffer.
           * This extra index mask helps to avoid false-sharing.
@@ -130,15 +130,15 @@ protected:
               * since calloc will align by the type size, which in this caseS
               * is a multiple of the cache line size.
              */
-            CircularBuffer = (FBufferNode*)calloc(IndexMask + 1, sizeof(FBufferNode));
+            // CircularBuffer = (FBufferNode*)calloc(IndexMask + 1, sizeof(FBufferNode));
         }
 
         virtual ~FBufferData()
         {
-            if(CircularBuffer)
-            {
-                free(CircularBuffer);
-            }
+            //if(CircularBuffer)
+            //{
+            //    free(CircularBuffer);
+            //}
         }
 
         FBufferData(const FBufferData& other)                           = delete;
