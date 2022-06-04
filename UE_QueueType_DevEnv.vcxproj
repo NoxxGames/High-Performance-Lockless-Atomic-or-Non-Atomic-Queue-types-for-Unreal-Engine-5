@@ -162,7 +162,6 @@
     <ClInclude Include="LocalStuff\MyTimer.h" />
     <ClInclude Include="LocalStuff\My_MpmcQueue.h" />
     <ClInclude Include="Queue.h" />
-    <ClInclude Include="UEInterface.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

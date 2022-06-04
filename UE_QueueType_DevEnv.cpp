@@ -7,7 +7,7 @@
 
 #define CORE_COUNT 16
 
-#define ELEMENTS_TO_PROCESS (1000000 / CORE_COUNT)
+#define ELEMENTS_TO_PROCESS (10000000 / CORE_COUNT)
 
 std::atomic<int> ConsumersComplete = {0};
 
@@ -43,38 +43,31 @@ namespace QBenchmarks
         }
         ThreadsComplete.store(0);
     }
-
-    static FORCEINLINE void CreateThreadLambda(const std::function<void()>& Functor)
-    {
-        std::thread([&]() // Producer
-        {
-            Functor();
-            ThreadsComplete.fetch_add(1);
-        }).detach();
-    }
     
     static FORCEINLINE void NoDelayHighContentionRegular(const int ThreadCount, const int CycleCount,
         std::memory_order MemoryOrder = std::memory_order_acquire)
     {
         for(int i = 0; i < ThreadCount; ++i)
         {
-            CreateThreadLambda([&]() // producer
+            std::thread([&]() // producer
             {
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     const FBenchType ValueToPush = j;
                     QueueVar.PushFunction(ValueToPush);
                 }
-            });
+                ThreadsComplete.fetch_add(1);
+            }).detach();
 
-            CreateThreadLambda([&]() // consumer
+            std::thread([&]() // consumer
             {
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     FBenchType PoppedValue = 0;
                     QueueVar.PopFunction(PoppedValue);
                 }
-            });
+                ThreadsComplete.fetch_add(1);
+            }).detach();
         }
 
         WaitForCompletion(ThreadCount * 2);
@@ -85,17 +78,18 @@ namespace QBenchmarks
     {
         for(int i = 0; i < ThreadCount; ++i)
         {
-            CreateThreadLambda([&]() // producer
+            std::thread([&]() // producer
             {
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     const FBenchType ValueToPush = j;
                     QueueVar.PushFunction(ValueToPush);
                 }
-            });
+                ThreadsComplete.fetch_add(1);
+            }).detach();
         }
 
-        CreateThreadLambda([&]() // consumer
+        std::thread([&]() // consumer
         {
             const int AdjustedCycleCount = CycleCount * ThreadCount;
             for(int j = 0; j < AdjustedCycleCount; ++j)
@@ -103,7 +97,8 @@ namespace QBenchmarks
                 FBenchType PoppedValue = 0;
                 QueueVar.PopFunction(PoppedValue);
             }
-        });
+            ThreadsComplete.fetch_add(1);
+        }).detach();
 
         WaitForCompletion(ThreadCount + 1);
     }
@@ -111,18 +106,19 @@ namespace QBenchmarks
     static FORCEINLINE void NoDelayHighConsumerContentionRegular(const int ThreadCount, const int CycleCount,
         std::memory_order MemoryOrder = std::memory_order_acquire)
     {
-        CreateThreadLambda([&]()  // producer
+        std::thread([&]()  // producer
         {
             for(int j = 0; j < CycleCount; ++j)
             {
                 const FBenchType ValueToPush = j;
                 QueueVar.PushFunction(ValueToPush);
             }
-        });
+            ThreadsComplete.fetch_add(1);
+        }).detach();
         
         for(int i = 0; i < ThreadCount; ++i)
         {
-            CreateThreadLambda([&]() // consumer
+            std::thread([&]() // consumer
             {
                 const int AdjustedCycleCount = CycleCount * ThreadCount;
                 for(int j = 0; j < AdjustedCycleCount; ++j)
@@ -130,7 +126,8 @@ namespace QBenchmarks
                     FBenchType PoppedValue = 0;
                     QueueVar.PopFunction(PoppedValue);
                 }
-            });
+                ThreadsComplete.fetch_add(1);
+            }).detach();
         }
 
         WaitForCompletion(ThreadCount + 1);

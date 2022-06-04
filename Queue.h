@@ -6,10 +6,41 @@
 #include <atomic>
 #include <functional>
 
-#include "UEInterface.h"
+//------------------------------------------------------------//
+//                                                            //
+//                    START UE5 INTERFACE                     //
+//                                                            //
+//------------------------------------------------------------//
 
-#define FASTCALL __fastcall // pointles on x64
-#define HARDWARE_PAUSE() std::this_thread::yield(); // TODO: other platforms
+typedef int8_t      int8;
+typedef int16_t     int16;
+typedef int32_t     int32;
+typedef int64_t     int64;
+
+typedef uint8_t     uint8;
+typedef uint16_t    uint16;
+typedef uint32_t    uint32;
+typedef uint64_t    uint64;
+
+#define PLATFORM_CACHE_LINE_SIZE 64
+
+#if defined(_MSC_VER)
+    #define HARDWARE_PAUSE()                _mm_pause();
+    #define FORCEINLINE                     __forceinline
+#else
+    #if defined(__clang__) || defined(__GNUC__)
+        #define HARDWARE_PAUSE()            __builtin_ia32_pause();
+    #else
+        #define HARDWARE_PAUSE()            std::this_thread::yield()
+    #endif
+    #define FORCEINLINE                     inline
+#endif
+
+//------------------------------------------------------------//
+//                                                            //
+//                     END UE5 INTERFACE                      //
+//                                                            //
+//------------------------------------------------------------//
 
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
@@ -36,7 +67,9 @@ class FBoundedQueueBenchmarking
     using FElement = T;
     using FCursor = uint64;
 
-    /* TODO: static_asserts */
+    /*
+     * TODO: static_asserts
+    */
     static_assert(TQueueSize > 0, "");
     
 public:
