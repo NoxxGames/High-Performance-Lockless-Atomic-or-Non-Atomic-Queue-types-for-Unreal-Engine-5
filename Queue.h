@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <functional>
+#include <mutex>
+#include <vector>
 
 //------------------------------------------------------------//
 //                                                            //
@@ -356,6 +358,19 @@ public:
         return true;
     }
 
+    virtual FORCEINLINE bool Push_MultiCursor(const FElement& NewElement,
+        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
+    {
+        return true;
+    }
+    
+    virtual FORCEINLINE bool Pop_MultiCursor(FElement& OutElement,
+        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
+    {
+        return true;
+    }
+
+    
     virtual FORCEINLINE uint64 Size() const
     {
         return BufferData.IndexMaskUtility + 1;
@@ -405,6 +420,127 @@ protected:
         }
     };
 
+    /* cite: https://travisdowns.github.io/blog/2020/07/06/concurrency-costs.html */
+    
+    class FCASMultiCursor
+    {
+        static constexpr uint64 NUM_CURSORS     = 64U;
+        static constexpr uint64 INDEX_MASK      = NUM_CURSORS - 1;
+
+        std::atomic<uint8> Index{0};
+        std::atomic<uint64> Cursors[NUM_CURSORS];
+        
+    public:
+        uint64 operator++(int)
+        {
+            for(;;)
+            {
+                const uint8 i = Index.load(std::memory_order_relaxed);
+                std::atomic<uint64>& Cursor = Cursors[i];
+
+                uint64 CurrentValue = Cursor.load();
+                if(Cursor.compare_exchange_strong(CurrentValue, CurrentValue + 1))
+                {
+                    return CurrentValue;
+                }
+                
+                Index.store(((i + 1) & INDEX_MASK));
+            }
+        }
+
+        uint64 Read()
+        {
+            uint64 Sum = 0;
+            for(auto& Cursor : Cursors)
+            {
+                Sum += Cursor.load();
+            }
+            return Sum;
+        }
+    };
+
+    CACHE_ALIGN FCASMultiCursor ProducerMultiCursor;
+    CACHE_ALIGN FCASMultiCursor ConsumerMultiCursor;
+    
+   /* TODO, proper TLS implementation, without using thread_local
+    class FTLSCursor
+    {
+    public:
+        FTLSCursor()
+            : Cursor{0}
+        {
+            TLSCursorData.AddNewTLSCursor(this);
+        }
+
+        ~FTLSCursor()
+        {
+            TLSCursorData.RemoveTLSCursor(this);
+        }
+        
+        uint64 GetCursorValue() const
+        {
+            return Cursor.load(std::memory_order_relaxed);
+        }
+
+        void Increment()
+        {
+            const uint64 Current = Cursor.load(std::memory_order_relaxed);
+            Cursor.store(Current + 1, std::memory_order_relaxed);
+        }
+
+    private:
+        std::atomic<uint64> Cursor;
+    };
+
+private:
+    class FTLSCursorData
+    {
+        std::mutex Lock;
+        std::vector<FTLSCursor*> AllCursors;
+        uint64 Accumulated;
+        
+    public:
+        FTLSCursorData()
+        {
+            std::lock_guard<std::mutex> g(Lock);
+            Accumulated = 0;
+        }
+        
+        void AddNewTLSCursor(const FTLSCursor* NewCursor)
+        {
+            std::lock_guard<std::mutex> g(Lock);
+            AllCursors.push_back(NewCursor);
+        }
+        
+        void RemoveTLSCursor(const FTLSCursor* CursorToRemove)
+        {
+            std::lock_guard<std::mutex> g(Lock);
+            Accumulated += CursorToRemove->GetCursorValue();
+            AllCursors.erase(std::remove(AllCursors.begin(), AllCursors.end(), CursorToRemove), AllCursors.end());
+        }
+
+        uint64 Read()
+        {
+            std::lock_guard<std::mutex> g(Lock);
+            uint64 Sum = 0;
+            for(auto Local : AllCursors)
+            {
+                Sum += Local->GetCursorValue();
+            }
+            return Sum + Accumulated;
+        }
+
+        void Increment()
+        {
+            for(auto Local : AllCursors)
+            {
+                Local->Increment();
+            }
+        }
+    };
+    
+    const FTLSCursorData TLSCursorData;
+*/
 protected:
     CACHE_ALIGN FBufferData BufferData;
     
