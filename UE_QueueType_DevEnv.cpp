@@ -9,8 +9,6 @@
 
 #define ELEMENTS_TO_PROCESS (10000000 / CORE_COUNT)
 
-std::atomic<int> ConsumersComplete = {0};
-
 using FBenchType = int;
 
 //#define BENCH_START_QUEUE_SIZE      128
@@ -22,13 +20,15 @@ using FBenchType = int;
 
 #define BENCH_QUEUE_SIZE            1000000
 
-#define QueueVar                    MyQueue
-#define PushFunction(_ELEMENT_)     QueueVar.Push_Cached(_ELEMENT_)
-#define PopFunction(_ELEMENT_)      QueueVar.Pop_Cached((_ELEMENT_)) 
-
-// #define QueueVar                    OtherQueue
-// #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(56)
-// #define PopFunction(_ELEMENT_)      (_ELEMENT_) = QueueVar.pop() 
+#if false
+    #define QueueVar                      MyQueue
+    #define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
+    #define PopFunction(_ELEMENT_)        QueueVar.Pop((_ELEMENT_)) 
+#else
+    #define QueueVar                    OtherQueue
+    #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(56)
+    #define PopFunction(_ELEMENT_)      (_ELEMENT_) = QueueVar.pop() 
+#endif
 
 #define BENCH_SLEEP_UNIT(_SLEEP_LENGTH_) std::chrono::milliseconds((_SLEEP_LENGTH_))
 #define BENCH_SLEEP_LENGTH 1
@@ -88,7 +88,7 @@ namespace QBenchmarks
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     const FBenchType ValueToPush = j;
-                    PushFunction(ValueToPush);
+                    // PushFunction(ValueToPush);
                 }
                 ThreadsComplete.fetch_add(1);
             }).detach();
@@ -100,7 +100,7 @@ namespace QBenchmarks
             for(int j = 0; j < AdjustedCycleCount; ++j)
             {
                 FBenchType PoppedValue = 0;
-                PopFunction(PoppedValue);
+                // PopFunction(PoppedValue);
             }
             ThreadsComplete.fetch_add(1);
         }).detach();
@@ -116,7 +116,7 @@ namespace QBenchmarks
             for(int j = 0; j < CycleCount; ++j)
             {
                 const FBenchType ValueToPush = j;
-                PushFunction(ValueToPush);
+                // PushFunction(ValueToPush);
             }
             ThreadsComplete.fetch_add(1);
         }).detach();
@@ -129,7 +129,7 @@ namespace QBenchmarks
                 for(int j = 0; j < AdjustedCycleCount; ++j)
                 {
                     FBenchType PoppedValue = 0;
-                    PopFunction(PoppedValue);
+                    // PopFunction(PoppedValue);
                 }
                 ThreadsComplete.fetch_add(1);
             }).detach();

@@ -63,7 +63,9 @@ constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
     return N;
 }
 
-template<typename T, uint64 TQueueSize = 0>
+
+
+template<typename T, uint64 TQueueSize>
 class FBoundedQueueBenchmarking
 {
     using FElement = T;
@@ -153,28 +155,16 @@ public:
     virtual FORCEINLINE bool Push(const FElement& NewElement,
         const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
     {
-        FCursor CurrentProducerCursor;
-        
-        for(;;)
+        const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
+        const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
+
+        if(((CurrentProducerCursor & BufferData.IndexMaskUtility) + 1)
+            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
         {
-            CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
-            const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
-
-            if(((CurrentProducerCursor & BufferData.IndexMaskUtility) + 1)
-                == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
-            {
-                return false;
-            }
-
-            if(ProducerCursor.compare_exchange_weak(CurrentProducerCursor,
-                CurrentProducerCursor + 1,
-                std::memory_order_release, std::memory_order_relaxed))
-            {
-                break;
-            }
-
-            HARDWARE_PAUSE();
+            return false;
         }
+
+        ProducerCursor.fetch_add(1, std::memory_order_acq_rel);
 
         BufferData.CircularBuffer[
             CurrentProducerCursor & BufferData.IndexMask]
@@ -186,28 +176,16 @@ public:
     virtual FORCEINLINE bool Pop(FElement& OutElement,
         const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
     {
-        FCursor CurrentConsumerCursor;
-        
-        for(;;)
+        const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
+        const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
+
+        if((CurrentProducerCursor & BufferData.IndexMaskUtility)
+            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
         {
-            const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
-            CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
-
-            if((CurrentProducerCursor & BufferData.IndexMaskUtility)
-                == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
-            {
-                return false;
-            }
-
-            if(ConsumerCursor.compare_exchange_weak(CurrentConsumerCursor,
-                CurrentConsumerCursor + 1,
-                std::memory_order_release, std::memory_order_relaxed))
-            {
-                break;
-            }
-
-            HARDWARE_PAUSE();
+            return false;
         }
+
+        ConsumerCursor.fetch_add(1, std::memory_order_acq_rel);
 
         BufferData.CircularBuffer[
             CurrentConsumerCursor & BufferData.IndexMask]
@@ -358,15 +336,48 @@ public:
         return true;
     }
 
-    virtual FORCEINLINE bool Push_MultiCursor(const FElement& NewElement,
+    struct FMultiCursorIndex
+    {
+        uint64 Index;
+    };
+    
+    virtual FORCEINLINE bool Push_MultiCursor(const FElement& NewElement, FMultiCursorIndex& MultiCursorIndex,
         const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
     {
+        uint64 CurrentProducerCursor = ProducerMultiCursor.Read();
+        uint64 CurrentConsumerCursor = ConsumerMultiCursor.Read();
+
+        if(((CurrentProducerCursor & BufferData.IndexMaskUtility) + 1)
+            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
+        {
+            return false;
+        }
+
+        ProducerMultiCursor.Increment(MultiCursorIndex);
+        BufferData.CircularBuffer[
+            CurrentProducerCursor & BufferData.IndexMask]
+            .SetData(NewElement);
+        
         return true;
     }
     
-    virtual FORCEINLINE bool Pop_MultiCursor(FElement& OutElement,
+    virtual FORCEINLINE bool Pop_MultiCursor(FElement& OutElement, FMultiCursorIndex& MultiCursorIndex,
         const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
     {
+        uint64 CurrentProducerCursor = ProducerMultiCursor.Read();
+        uint64 CurrentConsumerCursor = ConsumerMultiCursor.Read();
+
+        if((CurrentProducerCursor & BufferData.IndexMaskUtility)
+            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
+        {
+            return false;
+        }
+
+        ConsumerMultiCursor.Increment(MultiCursorIndex);
+        BufferData.CircularBuffer[
+            CurrentConsumerCursor & BufferData.IndexMask]
+            .GetData(OutElement);
+        
         return true;
     }
 
@@ -421,30 +432,31 @@ protected:
     };
 
     /* cite: https://travisdowns.github.io/blog/2020/07/06/concurrency-costs.html */
+
+
     
     class FCASMultiCursor
     {
-        static constexpr uint64 NUM_CURSORS     = 64U;
+        static constexpr uint64 NUM_CURSORS     = 2;
         static constexpr uint64 INDEX_MASK      = NUM_CURSORS - 1;
-
-        std::atomic<uint8> Index{0};
+        
         std::atomic<uint64> Cursors[NUM_CURSORS];
         
     public:
-        uint64 operator++(int)
+        uint64 Increment(FMultiCursorIndex& MultiCursorIndex)
         {
             for(;;)
             {
-                const uint8 i = Index.load(std::memory_order_relaxed);
-                std::atomic<uint64>& Cursor = Cursors[i];
+                std::atomic<uint64>& Cursor = Cursors[MultiCursorIndex.Index & INDEX_MASK];
 
-                uint64 CurrentValue = Cursor.load();
-                if(Cursor.compare_exchange_strong(CurrentValue, CurrentValue + 1))
+                uint64 CurrentValue = Cursor.load(std::memory_order_relaxed);
+                if(Cursor.compare_exchange_strong(CurrentValue, CurrentValue + 1),
+                    std::memory_order_release)
                 {
                     return CurrentValue;
                 }
-                
-                Index.store(((i + 1) & INDEX_MASK));
+
+                MultiCursorIndex.Index++;
             }
         }
 
@@ -453,7 +465,7 @@ protected:
             uint64 Sum = 0;
             for(auto& Cursor : Cursors)
             {
-                Sum += Cursor.load();
+                Sum += Cursor.load(std::memory_order_acquire);
             }
             return Sum;
         }
