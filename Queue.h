@@ -192,6 +192,14 @@ public:
         return true;
     }
 
+    /*
+     * TODO: The regular cached functions should be faster than the individual ones
+     * due to true sharing on the initial load of both cursors at the same time.
+     * However the individual store to update the cached copies will cause false-sharing
+     * because it only updates the relevant cursor. A CAS (strong) that updates both
+     * at the same time, but only changing one would solve this issue. Need to test.
+     */
+    
     virtual FORCEINLINE bool Push_Cached(const FElement& NewElement,
         const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
     {
@@ -199,7 +207,7 @@ public:
         
         for(;;)
         {
-            CurrentCursorDataCache = CursorDataCache.Load(CursorDataLoadOrder);
+            CurrentCursorDataCache = CursorDataCache.Load(CursorDataLoadOrder); 
 
             if((CurrentCursorDataCache.ProducerCursor & BufferData.IndexMaskUtility) + 1
                 == (CurrentCursorDataCache.ConsumerCursor & BufferData.IndexMaskUtility))
@@ -406,9 +414,6 @@ protected:
     };
 
     /* cite: https://travisdowns.github.io/blog/2020/07/06/concurrency-costs.html */
-
-
-    
     class FCASMultiCursor
     {
         static constexpr uint64 NUM_CURSORS     = 2;
@@ -444,90 +449,11 @@ protected:
             return Sum;
         }
     };
-
+    
+protected:
     CACHE_ALIGN FCASMultiCursor ProducerMultiCursor;
     CACHE_ALIGN FCASMultiCursor ConsumerMultiCursor;
-    
-   /* TODO, proper TLS implementation, without using thread_local
-    class FTLSCursor
-    {
-    public:
-        FTLSCursor()
-            : Cursor{0}
-        {
-            TLSCursorData.AddNewTLSCursor(this);
-        }
 
-        ~FTLSCursor()
-        {
-            TLSCursorData.RemoveTLSCursor(this);
-        }
-        
-        uint64 GetCursorValue() const
-        {
-            return Cursor.load(std::memory_order_relaxed);
-        }
-
-        void Increment()
-        {
-            const uint64 Current = Cursor.load(std::memory_order_relaxed);
-            Cursor.store(Current + 1, std::memory_order_relaxed);
-        }
-
-    private:
-        std::atomic<uint64> Cursor;
-    };
-
-private:
-    class FTLSCursorData
-    {
-        std::mutex Lock;
-        std::vector<FTLSCursor*> AllCursors;
-        uint64 Accumulated;
-        
-    public:
-        FTLSCursorData()
-        {
-            std::lock_guard<std::mutex> g(Lock);
-            Accumulated = 0;
-        }
-        
-        void AddNewTLSCursor(const FTLSCursor* NewCursor)
-        {
-            std::lock_guard<std::mutex> g(Lock);
-            AllCursors.push_back(NewCursor);
-        }
-        
-        void RemoveTLSCursor(const FTLSCursor* CursorToRemove)
-        {
-            std::lock_guard<std::mutex> g(Lock);
-            Accumulated += CursorToRemove->GetCursorValue();
-            AllCursors.erase(std::remove(AllCursors.begin(), AllCursors.end(), CursorToRemove), AllCursors.end());
-        }
-
-        uint64 Read()
-        {
-            std::lock_guard<std::mutex> g(Lock);
-            uint64 Sum = 0;
-            for(auto Local : AllCursors)
-            {
-                Sum += Local->GetCursorValue();
-            }
-            return Sum + Accumulated;
-        }
-
-        void Increment()
-        {
-            for(auto Local : AllCursors)
-            {
-                Local->Increment();
-            }
-        }
-    };
-    
-    const FTLSCursorData TLSCursorData;
-*/
-protected:
     CACHE_ALIGN FBufferData BufferData;
     
     /* Used in all versions of push/pop */
