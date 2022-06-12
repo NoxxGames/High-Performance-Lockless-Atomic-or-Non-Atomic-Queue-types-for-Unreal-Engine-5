@@ -7,7 +7,7 @@
 
 #define CORE_COUNT 16
 
-#define ELEMENTS_TO_PROCESS (10000000 / CORE_COUNT)
+#define ELEMENTS_TO_PROCESS (100000000 / CORE_COUNT)
 
 using FBenchType = int;
 
@@ -20,10 +20,10 @@ using FBenchType = int;
 
 #define BENCH_QUEUE_SIZE            1000000
 
-#if false
+#if true
     #define QueueVar                      MyQueue
-    #define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
-    #define PopFunction(_ELEMENT_)        QueueVar.Pop((_ELEMENT_)) 
+    #define PushFunction(_ELEMENT_)       QueueVar.Push_Cached_Individual((_ELEMENT_))
+    #define PopFunction(_ELEMENT_)        QueueVar.Pop_Cached_Individual((_ELEMENT_)) 
 #else
     #define QueueVar                    OtherQueue
     #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(56)
