@@ -24,6 +24,8 @@ typedef uint16_t    uint16;
 typedef uint32_t    uint32;
 typedef uint64_t    uint64;
 
+typedef uint32 uint;
+
 #define PLATFORM_CACHE_LINE_SIZE 64
 
 #if defined(_MSC_VER)
@@ -46,6 +48,24 @@ typedef uint64_t    uint64;
 
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
+
+template<uint TBits>
+constexpr uint64 RemapCursorWithMix(const uint64 Index, const uint64 Mix)
+{
+    return Index ^ Mix ^ (Mix << TBits);
+}
+
+template<uint TBits>
+constexpr uint64 RemapCursor(const uint64 Index) noexcept
+{
+    return RemapCursorWithMix<TBits>(Index, ((Index ^ (Index >> TBits)) & ((1U << TBits) - 1)));
+}
+
+template<>
+constexpr uint64 RemapCursor<0>(const uint64 Index) noexcept
+{
+    return Index;
+}
 
 constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
 {
@@ -87,8 +107,9 @@ protected:
     class FBufferNode
     {
     public:
-        std::atomic<FElement> Data;
-        uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(std::atomic<FElement>))] = {};
+        FElement Data;
+        // std::atomic<FElement> Data;
+        // uint8 PaddingBytes0[QUEUE_PADDING_BYTES(sizeof(std::atomic<FElement>))] = {};
 
     public:
         FBufferNode()
@@ -97,12 +118,14 @@ protected:
 
         FORCEINLINE void GetData(FElement& Out)
         {
-            Out = Data.load(std::memory_order_acquire);
+            // Out = Data.load(std::memory_order_acquire);
+            Out = Data;
         }
         
         FORCEINLINE void SetData(const FElement& NewData)
         {
-            Data.store(NewData, std::memory_order_release);
+            // Data.store(NewData, std::memory_order_release);
+            Data = NewData;
         }
     };
     
@@ -129,7 +152,7 @@ protected:
             /** Contigiously allocate the buffer.
               * The theory behind using calloc and not aligned_alloc
               * or equivelant, is that the memory should still be aligned,
-              * since calloc will align by the type size, which in this caseS
+              * since calloc will align by the type size, which in this case
               * is a multiple of the cache line size.
              */
             // CircularBuffer = (FBufferNode*)calloc(IndexMask + 1, sizeof(FBufferNode));
@@ -156,17 +179,17 @@ public:
         const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
         const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
 
-        if(((CurrentProducerCursor & BufferData.IndexMaskUtility) + 1)
-            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
+        if(((CurrentProducerCursor) + 1)
+            == (CurrentConsumerCursor))
         {
             return false;
         }
 
         ProducerCursor.fetch_add(1, std::memory_order_acq_rel);
 
-        BufferData.CircularBuffer[
-            CurrentProducerCursor & BufferData.IndexMask]
-            .SetData(NewElement);
+        uint64 Index = RemapCursor<6>(CurrentProducerCursor & BufferData.IndexMask);
+        
+        BufferData.CircularBuffer[Index].SetData(NewElement);
         
         return true;
     }
@@ -177,17 +200,17 @@ public:
         const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
         const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
 
-        if((CurrentProducerCursor & BufferData.IndexMaskUtility)
-            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
+        if((CurrentProducerCursor)
+            == (CurrentConsumerCursor))
         {
             return false;
         }
 
         ConsumerCursor.fetch_add(1, std::memory_order_acq_rel);
 
-        BufferData.CircularBuffer[
-            CurrentConsumerCursor & BufferData.IndexMask]
-            .GetData(OutElement);
+        uint64 Index = RemapCursor<6>(CurrentConsumerCursor & BufferData.IndexMask);
+        
+        BufferData.CircularBuffer[Index].GetData(OutElement);
         
         return true;
     }

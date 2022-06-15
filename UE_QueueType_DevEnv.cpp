@@ -22,8 +22,8 @@ using FBenchType = int;
 
 #if true
     #define QueueVar                      MyQueue
-    #define PushFunction(_ELEMENT_)       QueueVar.Push_Cached_Individual((_ELEMENT_))
-    #define PopFunction(_ELEMENT_)        QueueVar.Pop_Cached_Individual((_ELEMENT_)) 
+    #define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
+    #define PopFunction(_ELEMENT_)        QueueVar.Pop((_ELEMENT_)) 
 #else
     #define QueueVar                    OtherQueue
     #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(56)
@@ -59,7 +59,10 @@ namespace QBenchmarks
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     const FBenchType ValueToPush = j;
-                    PushFunction(ValueToPush);
+                    if(!PushFunction(ValueToPush))
+                    {
+                        --j;
+                    }
                 }
                 ThreadsComplete.fetch_add(1);
             }).detach();
@@ -69,7 +72,10 @@ namespace QBenchmarks
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     FBenchType PoppedValue = 0;
-                    PopFunction(PoppedValue);
+                    if(!PopFunction(PoppedValue))
+                    {
+                        --j;
+                    }
                 }
                 ThreadsComplete.fetch_add(1);
             }).detach();
