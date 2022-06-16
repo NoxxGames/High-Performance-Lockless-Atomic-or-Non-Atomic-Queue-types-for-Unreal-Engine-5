@@ -5,7 +5,7 @@
 #include "LocalStuff/AtomicQueue.h"
 #include "LocalStuff/MyTimer.h"
 
-#define CORE_COUNT 16
+#define CORE_COUNT 8
 
 #define ELEMENTS_TO_PROCESS (100000000 / CORE_COUNT)
 
@@ -20,14 +20,14 @@ using FBenchType = int;
 
 #define BENCH_QUEUE_SIZE            1000000
 
-#if true
+#if 1
     #define QueueVar                      MyQueue
     #define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
     #define PopFunction(_ELEMENT_)        QueueVar.Pop((_ELEMENT_)) 
 #else
     #define QueueVar                    OtherQueue
-    #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(56)
-    #define PopFunction(_ELEMENT_)      (_ELEMENT_) = QueueVar.pop() 
+    #define PushFunction(_ELEMENT_)     QueueVar.try_push<FBenchType>(34345)
+    #define PopFunction(_ELEMENT_)      QueueVar.try_pop<FBenchType>((_ELEMENT_)) 
 #endif
 
 #define BENCH_SLEEP_UNIT(_SLEEP_LENGTH_) std::chrono::milliseconds((_SLEEP_LENGTH_))
@@ -58,7 +58,7 @@ namespace QBenchmarks
             {
                 for(int j = 0; j < CycleCount; ++j)
                 {
-                    const FBenchType ValueToPush = j;
+                    FBenchType ValueToPush = j;
                     if(!PushFunction(ValueToPush))
                     {
                         --j;

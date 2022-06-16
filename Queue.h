@@ -48,6 +48,29 @@ typedef uint32 uint;
 
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
+#define Q_NOEXCEPT_ENABLED true
+
+template<size_t elements_per_cache_line> struct GetCacheLineIndexBits { static int constexpr value = 0; };
+template<> struct GetCacheLineIndexBits<256> { static int constexpr value = 8; };
+template<> struct GetCacheLineIndexBits<128> { static int constexpr value = 7; };
+template<> struct GetCacheLineIndexBits< 64> { static int constexpr value = 6; };
+template<> struct GetCacheLineIndexBits< 32> { static int constexpr value = 5; };
+template<> struct GetCacheLineIndexBits< 16> { static int constexpr value = 4; };
+template<> struct GetCacheLineIndexBits<  8> { static int constexpr value = 3; };
+template<> struct GetCacheLineIndexBits<  4> { static int constexpr value = 2; };
+template<> struct GetCacheLineIndexBits<  2> { static int constexpr value = 1; };
+
+template<unsigned array_size, size_t elements_per_cache_line>
+struct GetIndexShuffleBits {
+    static int constexpr bits = GetCacheLineIndexBits<elements_per_cache_line>::value;
+    static unsigned constexpr min_size = 1u << (bits * 2);
+    static int constexpr value = array_size < min_size ? 0 : bits;
+};
+
+template<unsigned array_size, size_t elements_per_cache_line>
+struct GetIndexShuffleBits<array_size, elements_per_cache_line> {
+    static int constexpr value = 0;
+};
 
 template<uint TBits>
 constexpr uint64 RemapCursorWithMix(const uint64 Index, const uint64 Mix)
@@ -55,6 +78,9 @@ constexpr uint64 RemapCursorWithMix(const uint64 Index, const uint64 Mix)
     return Index ^ Mix ^ (Mix << TBits);
 }
 
+/**
+ * @cite https://graphics.stanford.edu/~seander/bithacks.html#SwappingBitsXOR
+ */
 template<uint TBits>
 constexpr uint64 RemapCursor(const uint64 Index) noexcept
 {
@@ -86,9 +112,14 @@ constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
 template<typename T, uint64 TQueueSize>
 class FBoundedQueueBenchmarking
 {
+    enum class EBufferNodeState : uint8;
+    
     using FElement = T;
     using FCursor = uint64;
-
+    
+    static constexpr uint64 RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr int ShuffleBits = GetIndexShuffleBits<RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
+    
     /*
      * TODO: static_asserts
     */
@@ -104,6 +135,14 @@ public:
     virtual FBoundedQueueBenchmarking& operator=(FBoundedQueueBenchmarking&& other) noexcept  = delete;
 
 protected:
+    enum class EBufferNodeState : uint8
+    {
+        EMPTY,
+        STORING,
+        FULL,
+        LOADING
+    };
+    
     class FBufferNode
     {
     public:
@@ -136,18 +175,12 @@ protected:
           * This results in true-sharing.
          */
         const volatile uint64 IndexMask;
-        FBufferNode CircularBuffer[RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize)];
-        uint8 PaddingBytes0[QUEUE_PADDING_BYTES((sizeof(uint64) * 2) - sizeof(void*))] = {};
-        /** A Secondary index mask used for all cases except when accessing the CircularBuffer.
-          * This extra index mask helps to avoid false-sharing.
-         */
-        const volatile uint64 IndexMaskUtility;
-        uint8 PaddingBytes1[QUEUE_PADDING_BYTES(sizeof(uint64))] = {};
+        CACHE_ALIGN FBufferNode CircularBuffer[RoundedSize];
+        CACHE_ALIGN EBufferNodeState CircularBufferStates[RoundedSize];
         
     public:
         FBufferData()
-            : IndexMask(RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize) - 1),
-            IndexMaskUtility(IndexMask)
+            : IndexMask(RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize) - 1)
         {
             /** Contigiously allocate the buffer.
               * The theory behind using calloc and not aligned_alloc
@@ -174,7 +207,7 @@ protected:
 
 public:
     virtual FORCEINLINE bool Push(const FElement& NewElement,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
+        const std::memory_order CursorDataLoadOrder = std::memory_order_relaxed) noexcept(Q_NOEXCEPT_ENABLED)
     {
         const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
         const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
@@ -185,9 +218,9 @@ public:
             return false;
         }
 
-        ProducerCursor.fetch_add(1, std::memory_order_acq_rel);
+        ProducerCursor.fetch_add(1, std::memory_order_acquire);
 
-        uint64 Index = RemapCursor<6>(CurrentProducerCursor & BufferData.IndexMask);
+        const uint64 Index = RemapCursor<ShuffleBits>(CurrentProducerCursor & BufferData.IndexMask);
         
         BufferData.CircularBuffer[Index].SetData(NewElement);
         
@@ -195,7 +228,7 @@ public:
     }
     
     virtual FORCEINLINE bool Pop(FElement& OutElement,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
+        const std::memory_order CursorDataLoadOrder = std::memory_order_relaxed) noexcept(Q_NOEXCEPT_ENABLED)
     {
         const FCursor CurrentProducerCursor = ProducerCursor.load(CursorDataLoadOrder);
         const FCursor CurrentConsumerCursor = ConsumerCursor.load(CursorDataLoadOrder);
@@ -206,190 +239,18 @@ public:
             return false;
         }
 
-        ConsumerCursor.fetch_add(1, std::memory_order_acq_rel);
+        ConsumerCursor.fetch_add(1, std::memory_order_acquire);
 
-        uint64 Index = RemapCursor<6>(CurrentConsumerCursor & BufferData.IndexMask);
+        const uint64 Index = RemapCursor<ShuffleBits>(CurrentConsumerCursor & BufferData.IndexMask);
         
         BufferData.CircularBuffer[Index].GetData(OutElement);
         
         return true;
     }
-
-    /*
-     * TODO: The regular cached functions should be faster than the individual ones
-     * due to true sharing on the initial load of both cursors at the same time.
-     * However the individual store to update the cached copies will cause false-sharing
-     * because it only updates the relevant cursor. A CAS (strong) that updates both
-     * at the same time, but only changing one would solve this issue. Need to test.
-     */
-    
-    virtual FORCEINLINE bool Push_Cached(const FElement& NewElement,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
-    {
-        FCursorDataCache CurrentCursorDataCache;
-        
-        for(;;)
-        {
-            CurrentCursorDataCache = CursorDataCache.Load(CursorDataLoadOrder); 
-
-            if((CurrentCursorDataCache.ProducerCursor & BufferData.IndexMaskUtility) + 1
-                == (CurrentCursorDataCache.ConsumerCursor & BufferData.IndexMaskUtility))
-            {
-                return false;
-            }
-
-            const uint64 DesiredProducerCursorValue = CurrentCursorDataCache.ProducerCursor + 1;
-            
-            if(ProducerCursor.compare_exchange_weak(CurrentCursorDataCache.ProducerCursor,
-                DesiredProducerCursorValue,
-                std::memory_order_release, std::memory_order_relaxed))
-            {
-                CursorDataCache.SetProducerCursor(DesiredProducerCursorValue);
-                break;
-            }
-
-            HARDWARE_PAUSE();
-        }
-
-        BufferData.CircularBuffer[
-            CurrentCursorDataCache.ProducerCursor & BufferData.IndexMask]
-            .SetData(NewElement);
-        
-        return true;
-    }
-    
-    virtual FORCEINLINE bool Pop_Cached(FElement& OutElement,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
-    {
-        FCursorDataCache CurrentCursorDataCache;
-        
-        for(;;)
-        {
-            CurrentCursorDataCache = CursorDataCache.Load(CursorDataLoadOrder);
-
-            if((CurrentCursorDataCache.ProducerCursor & BufferData.IndexMaskUtility)
-                == (CurrentCursorDataCache.ConsumerCursor & BufferData.IndexMaskUtility))
-            {
-                return false;
-            }
-
-            const uint64 DesiredConsumerCursorValue = CurrentCursorDataCache.ConsumerCursor + 1;
-            
-            if(ConsumerCursor.compare_exchange_weak(CurrentCursorDataCache.ConsumerCursor,
-                DesiredConsumerCursorValue,
-                std::memory_order_release, std::memory_order_relaxed))
-            {
-                CursorDataCache.SetConsumerCursor(DesiredConsumerCursorValue);
-                break;
-            }
-
-            HARDWARE_PAUSE();
-        }
-
-        BufferData.CircularBuffer[
-            CurrentCursorDataCache.ConsumerCursor & BufferData.IndexMask]
-            .GetData(OutElement);
-        
-        return true;
-    }
-
-    virtual FORCEINLINE bool Push_Cached_Individual(const FElement& NewElement,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
-    {
-        {
-            const FCursor CurrentProducerCursorCached = ProducerCursorCache.load(CursorDataLoadOrder);
-            const FCursor CurrentConsumerCursorCached = ConsumerCursorCache.load(CursorDataLoadOrder);
-
-            if(((CurrentProducerCursorCached + 1) & BufferData.IndexMaskUtility)
-                == (CurrentConsumerCursorCached & BufferData.IndexMaskUtility))
-            {
-                return false;
-            }
-        }
-        
-        const uint64 Old = ProducerCursor.fetch_add(1, std::memory_order_acq_rel);
-        ProducerCursorCache.store(Old + 1, std::memory_order_release);
-
-        BufferData.CircularBuffer[
-            Old & BufferData.IndexMask]
-            .SetData(NewElement);
-        
-        return true;
-    }
-    
-    virtual FORCEINLINE bool Pop_Cached_Individual(FElement& OutElement,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
-    {
-        {
-            const FCursor CurrentProducerCursorCached = ProducerCursorCache.load(CursorDataLoadOrder);
-            const FCursor CurrentConsumerCursorCached = ConsumerCursorCache.load(CursorDataLoadOrder);
-
-            if((CurrentProducerCursorCached & BufferData.IndexMaskUtility)
-                == (CurrentConsumerCursorCached & BufferData.IndexMaskUtility))
-            {
-                return false;
-            }
-        }
-        
-        const uint64 Old = ConsumerCursor.fetch_add(1, std::memory_order_acq_rel);
-        ConsumerCursorCache.store(Old + 1, std::memory_order_release);
-
-        BufferData.CircularBuffer[
-            Old & BufferData.IndexMask]
-            .GetData(OutElement);
-        
-        return true;
-    }
-
-    struct FMultiCursorIndex
-    {
-        uint64 Index;
-    };
-    
-    virtual FORCEINLINE bool Push_MultiCursor(const FElement& NewElement, FMultiCursorIndex& MultiCursorIndex,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
-    {
-        uint64 CurrentProducerCursor = ProducerMultiCursor.Read();
-        uint64 CurrentConsumerCursor = ConsumerMultiCursor.Read();
-
-        if(((CurrentProducerCursor & BufferData.IndexMaskUtility) + 1)
-            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
-        {
-            return false;
-        }
-
-        ProducerMultiCursor.Increment(MultiCursorIndex);
-        BufferData.CircularBuffer[
-            CurrentProducerCursor & BufferData.IndexMask]
-            .SetData(NewElement);
-        
-        return true;
-    }
-    
-    virtual FORCEINLINE bool Pop_MultiCursor(FElement& OutElement, FMultiCursorIndex& MultiCursorIndex,
-        const std::memory_order CursorDataLoadOrder = std::memory_order_acquire)
-    {
-        uint64 CurrentProducerCursor = ProducerMultiCursor.Read();
-        uint64 CurrentConsumerCursor = ConsumerMultiCursor.Read();
-
-        if((CurrentProducerCursor & BufferData.IndexMaskUtility)
-            == (CurrentConsumerCursor & BufferData.IndexMaskUtility))
-        {
-            return false;
-        }
-
-        ConsumerMultiCursor.Increment(MultiCursorIndex);
-        BufferData.CircularBuffer[
-            CurrentConsumerCursor & BufferData.IndexMask]
-            .GetData(OutElement);
-        
-        return true;
-    }
-
     
     virtual FORCEINLINE uint64 Size() const
     {
-        return BufferData.IndexMaskUtility + 1;
+        return RoundedSize;
     }
     
     virtual FORCEINLINE bool Empty() const
@@ -403,90 +264,9 @@ public:
     }
 
 protected:
-    struct FCursorDataCache
-    {
-        FCursor ProducerCursor;
-        FCursor ConsumerCursor;
-    };
-    
-    struct FCursorData
-    {
-        std::atomic<FCursor> ProducerCursor;
-        std::atomic<FCursor> ConsumerCursor;
-
-        FCursorData(const FCursor InProducerCursor = 0, const FCursor InConsumerCursor = 0)
-        {
-            ProducerCursor.store(InProducerCursor, std::memory_order_release);
-            ConsumerCursor.store(InConsumerCursor, std::memory_order_release);
-        }
-
-        void SetProducerCursor(const FCursor InProducerCursor)
-        {
-            ProducerCursor.store(InProducerCursor, std::memory_order_release);
-        }
-
-        void SetConsumerCursor(const FCursor InConsumerCursor)
-        {
-            ConsumerCursor.store(InConsumerCursor, std::memory_order_release);
-        }
-
-        FCursorDataCache Load(const std::memory_order MemoryOrder) const
-        {
-            return {ProducerCursor.load(MemoryOrder), ConsumerCursor.load(MemoryOrder)};
-        }
-    };
-
-    /* cite: https://travisdowns.github.io/blog/2020/07/06/concurrency-costs.html */
-    class FCASMultiCursor
-    {
-        static constexpr uint64 NUM_CURSORS     = 2;
-        static constexpr uint64 INDEX_MASK      = NUM_CURSORS - 1;
-        
-        std::atomic<uint64> Cursors[NUM_CURSORS];
-        
-    public:
-        uint64 Increment(FMultiCursorIndex& MultiCursorIndex)
-        {
-            for(;;)
-            {
-                std::atomic<uint64>& Cursor = Cursors[MultiCursorIndex.Index & INDEX_MASK];
-
-                uint64 CurrentValue = Cursor.load(std::memory_order_relaxed);
-                if(Cursor.compare_exchange_strong(CurrentValue, CurrentValue + 1),
-                    std::memory_order_release)
-                {
-                    return CurrentValue;
-                }
-
-                MultiCursorIndex.Index++;
-            }
-        }
-
-        uint64 Read()
-        {
-            uint64 Sum = 0;
-            for(auto& Cursor : Cursors)
-            {
-                Sum += Cursor.load(std::memory_order_acquire);
-            }
-            return Sum;
-        }
-    };
-    
-protected:
-    CACHE_ALIGN FCASMultiCursor ProducerMultiCursor;
-    CACHE_ALIGN FCASMultiCursor ConsumerMultiCursor;
-
     CACHE_ALIGN FBufferData BufferData;
     
     /* Used in all versions of push/pop */
     CACHE_ALIGN std::atomic<FCursor> ProducerCursor;
     CACHE_ALIGN std::atomic<FCursor> ConsumerCursor;
-
-    /* For the cached functions */
-    CACHE_ALIGN FCursorData CursorDataCache;
-
-    /* For the individually cached functions */
-    CACHE_ALIGN std::atomic<FCursor> ProducerCursorCache;
-    CACHE_ALIGN std::atomic<FCursor> ConsumerCursorCache;
 };
