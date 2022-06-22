@@ -160,8 +160,8 @@ protected:
           * This results in true-sharing.
          */
         const volatile FIntegerType IndexMask;
-        CACHE_ALIGN FElementType CircularBuffer[RoundedSize];
-        CACHE_ALIGN EBufferNodeState CircularBufferStates[RoundedSize];
+        CACHE_ALIGN FElementType CircularBuffer[RoundedSize] = {};
+        CACHE_ALIGN EBufferNodeState CircularBufferStates[RoundedSize] = { EBufferNodeState::EMPTY };
         
     public:
         FBufferData()
