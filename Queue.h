@@ -109,92 +109,70 @@ constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
     return N;
 }
 
-enum class EBufferNodeState : uint8
-{
-    EMPTY,
-    STORING,
-    FULL,
-    LOADING
-};
-
-template<typename T, uint64 TQueueSize, bool SPSC = false, typename TIntegerType = uint64, bool TTotalOrder = true>
+template<typename T, uint64 TQueueSize, bool TSPSC = false, typename TIntegerType = uint64, bool TTotalOrder = true>
 class FBoundedQueueBenchmarking
 {
-    // enum class EBufferNodeState : uint8;
-    
-    using FElementType = T;
-    using FIntegerType = uint64;
-    
-    static constexpr uint64 RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
-    static constexpr int ShuffleBits = GetIndexShuffleBits<false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
-    
     /*
      * TODO: static_asserts
     */
     static_assert(TQueueSize > 0, "");
     
+    enum class EBufferNodeState : uint8
+    {
+        EMPTY,
+        STORING,
+        FULL,
+        LOADING
+    };
+    
+    using FElementType = T;
+    using FIntegerType = uint64;
+    
+    static constexpr TIntegerType RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr int ShuffleBits = GetIndexShuffleBits<
+        false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
+    static constexpr TIntegerType IndexMask = RoundedSize - 1;
+    
 public:
     FBoundedQueueBenchmarking()
         : ProducerCursor{0},
-        ConsumerCursor{0},
-        CacheProducerCursor{0},
-        CacheConsumerCursor{0}
+        ConsumerCursor{0}
     {
-        
     }
     
-    virtual ~FBoundedQueueBenchmarking()    = default;
+    ~FBoundedQueueBenchmarking() = default;
 
-    FBoundedQueueBenchmarking(const FBoundedQueueBenchmarking& other)                         = delete;
-    FBoundedQueueBenchmarking(FBoundedQueueBenchmarking&& other) noexcept                     = delete;
-    virtual FBoundedQueueBenchmarking& operator=(const FBoundedQueueBenchmarking& other)      = delete;
-    virtual FBoundedQueueBenchmarking& operator=(FBoundedQueueBenchmarking&& other) noexcept  = delete;
+    FBoundedQueueBenchmarking(const FBoundedQueueBenchmarking& other)                 = delete;
+    FBoundedQueueBenchmarking(FBoundedQueueBenchmarking&& other) noexcept             = delete;
+    FBoundedQueueBenchmarking& operator=(const FBoundedQueueBenchmarking& other)      = delete;
+    FBoundedQueueBenchmarking& operator=(FBoundedQueueBenchmarking&& other) noexcept  = delete;
 
 protected:
-
-    
     class FBufferData
     {
     public:
-        /** Both IndexMask & CircularBuffer data are only accessed at the same time.
-          * This results in true-sharing.
-         */
-        const volatile FIntegerType IndexMask;
-        CACHE_ALIGN FElementType CircularBuffer[RoundedSize] = {};
-        CACHE_ALIGN EBufferNodeState CircularBufferStates[RoundedSize] = { EBufferNodeState::EMPTY };
+        FElementType CircularBuffer[RoundedSize];
+        CACHE_ALIGN EBufferNodeState CircularBufferStates[RoundedSize];
         
     public:
         FBufferData()
-            : IndexMask(RoundedSize - 1)
+            : CircularBuffer{},
+            CircularBufferStates{EBufferNodeState::EMPTY}
         {
-            /** Contigiously allocate the buffer.
-              * The theory behind using calloc and not aligned_alloc
-              * or equivelant, is that the memory should still be aligned,
-              * since calloc will align by the type size, which in this case
-              * is a multiple of the cache line size.
-             */
-            // CircularBuffer = (FBufferNode*)calloc(IndexMask + 1, sizeof(FBufferNode));
         }
 
-        virtual ~FBufferData()
-        {
-            //if(CircularBuffer)
-            //{
-            //    free(CircularBuffer);
-            //}
-        }
-
-        FBufferData(const FBufferData& other)                           = delete;
-        FBufferData(FBufferData&& other) noexcept                       = delete;
-        virtual FBufferData& operator=(const FBufferData& other)        = delete;
-        virtual FBufferData& operator=(FBufferData&& other) noexcept    = delete;
+        virtual ~FBufferData() = default;
+        FBufferData(const FBufferData& other)                   = delete;
+        FBufferData(FBufferData&& other) noexcept               = delete;
+        FBufferData& operator=(const FBufferData& other)        = delete;
+        FBufferData& operator=(FBufferData&& other) noexcept    = delete;
     };
 
 public:
-    virtual FORCEINLINE bool Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = CacheProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = CacheConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
 
         if(((CurrentProducerCursor) + 1)
             == (CurrentConsumerCursor))
@@ -203,7 +181,6 @@ public:
         }
 
         const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, std::memory_order_acquire);
-        CacheProducerCursor.store(ThisIndex + 1, std::memory_order_release);
 
         const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & BufferData.IndexMask);
         BufferData.CircularBuffer[Index] = std::move(NewElement);
@@ -211,10 +188,10 @@ public:
         return true;
     }
     
-    virtual FORCEINLINE bool Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = CacheProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = CacheConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
 
         if((CurrentProducerCursor)
             == (CurrentConsumerCursor))
@@ -223,7 +200,6 @@ public:
         }
 
         const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, std::memory_order_acquire);
-        CacheConsumerCursor.store(ThisIndex + 1, std::memory_order_release);
         
         const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & BufferData.IndexMask);
         OutElement = std::forward<FElementType>(BufferData.CircularBuffer[Index]);
@@ -231,15 +207,15 @@ public:
         return true;
     }
     
-    virtual FORCEINLINE uint64 Size() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE uint64 Size() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         return RoundedSize;
     }
 
-    virtual FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = CacheProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = CacheConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
 
         if(((CurrentProducerCursor) + 1)
             == (CurrentConsumerCursor))
@@ -250,10 +226,10 @@ public:
         return false;
     }
     
-    virtual FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = CacheProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = CacheConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
 
         if((CurrentProducerCursor)
             == (CurrentConsumerCursor))
@@ -267,9 +243,6 @@ public:
 protected:
     CACHE_ALIGN FBufferData BufferData;
     
-    CACHE_ALIGN std::atomic<FIntegerType> ProducerCursor;
-    CACHE_ALIGN std::atomic<FIntegerType> ConsumerCursor;
-
-    CACHE_ALIGN std::atomic<FIntegerType>   CacheProducerCursor;
-    std::atomic<FIntegerType>               CacheConsumerCursor;
+    CACHE_ALIGN std::atomic<FIntegerType>   ProducerCursor;
+    CACHE_ALIGN std::atomic<FIntegerType>   ConsumerCursor;
 };
