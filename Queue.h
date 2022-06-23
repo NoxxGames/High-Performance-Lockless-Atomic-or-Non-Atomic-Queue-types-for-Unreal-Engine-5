@@ -109,8 +109,13 @@ constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
     return N;
 }
 
-template<typename T, uint64 TQueueSize, bool TSPSC = false, typename TIntegerType = uint64, bool TTotalOrder = true>
-class FBoundedQueueBenchmarking
+std::memory_order constexpr ACQUIRE     = std::memory_order_acquire;
+std::memory_order constexpr RELEASE     = std::memory_order_release;
+std::memory_order constexpr RELAXED     = std::memory_order_relaxed;
+std::memory_order constexpr SEQ_CONST   = std::memory_order_seq_cst;
+
+template<typename T, uint64 TQueueSize, typename TIntegerType = uint64, bool TTotalOrder = true, bool TSPSC = false>
+class FBoundedQueue final
 {
     /*
      * TODO: static_asserts
@@ -126,33 +131,34 @@ class FBoundedQueueBenchmarking
     };
     
     using FElementType = T;
-    using FIntegerType = uint64;
+    using FIntegerType = TIntegerType;
     
-    static constexpr TIntegerType RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr FIntegerType RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
     static constexpr int ShuffleBits = GetIndexShuffleBits<
         false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
-    static constexpr TIntegerType IndexMask = RoundedSize - 1;
+    static constexpr FIntegerType IndexMask = RoundedSize - 1;
+    static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
     
 public:
-    FBoundedQueueBenchmarking()
+    FBoundedQueue()
         : ProducerCursor{0},
         ConsumerCursor{0}
     {
     }
     
-    ~FBoundedQueueBenchmarking() = default;
+    ~FBoundedQueue() = default;
 
-    FBoundedQueueBenchmarking(const FBoundedQueueBenchmarking& other)                 = delete;
-    FBoundedQueueBenchmarking(FBoundedQueueBenchmarking&& other) noexcept             = delete;
-    FBoundedQueueBenchmarking& operator=(const FBoundedQueueBenchmarking& other)      = delete;
-    FBoundedQueueBenchmarking& operator=(FBoundedQueueBenchmarking&& other) noexcept  = delete;
+    FBoundedQueue(const FBoundedQueue& other)                 = delete;
+    FBoundedQueue(FBoundedQueue&& other) noexcept             = delete;
+    FBoundedQueue& operator=(const FBoundedQueue& other)      = delete;
+    FBoundedQueue& operator=(FBoundedQueue&& other) noexcept  = delete;
 
 protected:
     class FBufferData
     {
     public:
         FElementType CircularBuffer[RoundedSize];
-        CACHE_ALIGN EBufferNodeState CircularBufferStates[RoundedSize];
+        CACHE_ALIGN std::atomic<EBufferNodeState> CircularBufferStates[RoundedSize];
         
     public:
         FBufferData()
@@ -162,6 +168,7 @@ protected:
         }
 
         virtual ~FBufferData() = default;
+        
         FBufferData(const FBufferData& other)                   = delete;
         FBufferData(FBufferData&& other) noexcept               = delete;
         FBufferData& operator=(const FBufferData& other)        = delete;
@@ -171,8 +178,8 @@ protected:
 public:
     FORCEINLINE bool Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
 
         if(((CurrentProducerCursor) + 1)
             == (CurrentConsumerCursor))
@@ -180,18 +187,22 @@ public:
             return false;
         }
 
-        const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, std::memory_order_acquire);
+        if(TSPSC)
+        {
+            return false;
+        }
 
-        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & BufferData.IndexMask);
+        const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
+        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         BufferData.CircularBuffer[Index] = std::move(NewElement);
-        
+    
         return true;
     }
     
     FORCEINLINE bool Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
 
         if((CurrentProducerCursor)
             == (CurrentConsumerCursor))
@@ -199,9 +210,13 @@ public:
             return false;
         }
 
-        const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, std::memory_order_acquire);
-        
-        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & BufferData.IndexMask);
+        if(TSPSC)
+        {
+            return false;
+        }
+
+        const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
+        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         OutElement = std::forward<FElementType>(BufferData.CircularBuffer[Index]);
         
         return true;
@@ -214,8 +229,8 @@ public:
 
     FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
 
         if(((CurrentProducerCursor) + 1)
             == (CurrentConsumerCursor))
@@ -228,8 +243,8 @@ public:
     
     FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(std::memory_order_acquire);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(std::memory_order_acquire);
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
 
         if((CurrentProducerCursor)
             == (CurrentConsumerCursor))

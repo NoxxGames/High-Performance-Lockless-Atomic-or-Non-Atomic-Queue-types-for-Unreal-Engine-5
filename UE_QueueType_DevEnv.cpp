@@ -20,14 +20,14 @@ using FBenchType = int;
 
 #define BENCH_QUEUE_SIZE            1000000
 
-#if 1
+#if 0
     #define QueueVar                      MyQueue
     #define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
     #define PopFunction(_ELEMENT_)        QueueVar.Pop((_ELEMENT_)) 
 #else
     #define QueueVar                    OtherQueue
-    #define PushFunction(_ELEMENT_)     QueueVar.try_push<FBenchType>(34345)
-    #define PopFunction(_ELEMENT_)      QueueVar.try_pop<FBenchType>((_ELEMENT_)) 
+    #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(34345)
+    #define PopFunction(_ELEMENT_)      (_ELEMENT_) = QueueVar.pop() 
 #endif
 
 #define BENCH_SLEEP_UNIT(_SLEEP_LENGTH_) std::chrono::milliseconds((_SLEEP_LENGTH_))
@@ -35,7 +35,7 @@ using FBenchType = int;
 
 namespace QBenchmarks
 {
-    static FBoundedQueueBenchmarking<FBenchType, BENCH_QUEUE_SIZE> MyQueue;
+    static FBoundedQueue<FBenchType, BENCH_QUEUE_SIZE> MyQueue;
     static atomic_queue::AtomicQueue2<FBenchType, BENCH_QUEUE_SIZE, true, true, true, false> OtherQueue;
 
     static std::atomic<int> ThreadsComplete = {0};
@@ -59,10 +59,7 @@ namespace QBenchmarks
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     FBenchType ValueToPush = j;
-                    if(!PushFunction(ValueToPush))
-                    {
-                        --j;
-                    }
+                    PushFunction(ValueToPush);
                 }
                 ThreadsComplete.fetch_add(1);
             }).detach();
@@ -72,10 +69,7 @@ namespace QBenchmarks
                 for(int j = 0; j < CycleCount; ++j)
                 {
                     FBenchType PoppedValue = 0;
-                    if(!PopFunction(PoppedValue))
-                    {
-                        --j;
-                    }
+                    PopFunction(PoppedValue);
                 }
                 ThreadsComplete.fetch_add(1);
             }).detach();
