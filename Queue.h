@@ -115,7 +115,8 @@ std::memory_order constexpr RELEASE     = std::memory_order_release;
 std::memory_order constexpr RELAXED     = std::memory_order_relaxed;
 std::memory_order constexpr SEQ_CONST   = std::memory_order_seq_cst;
 
-template<typename T, uint64 TQueueSize, typename TIntegerType = uint64, bool TTotalOrder = true, bool TSPSC = false>
+template<typename T, uint64 TQueueSize, typename TIntegerType = uint,
+    bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
 class FBoundedQueue final
 {
     /*
@@ -186,9 +187,27 @@ public:
 
         const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
         const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        BufferData.CircularBuffer[Index] = std::move(NewElement);
-    
-        return;
+
+        /* Highly likely to succeed on first iteration. */
+        for(;;)
+        {
+            EBufferNodeState Expected = EBufferNodeState::EMPTY;
+            if(BufferData.CircularBufferStates[Index].compare_exchange_strong(
+                Expected, EBufferNodeState::LOADING,
+                ACQUIRE, RELAXED))
+            {
+                BufferData.CircularBuffer[Index] = std::move(NewElement);
+                BufferData.CircularBufferStates[Index].store(EBufferNodeState::EMPTY, RELEASE);
+                return;
+            }
+
+            // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
+            do
+            {
+                SPIN_LOOP_PAUSE();
+            }
+            while(TMaxThroughput && BufferData.CircularBufferStates[Index].load(RELAXED) != EBufferNodeState::EMPTY);
+        }
     }
     
     FORCEINLINE void Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
@@ -213,12 +232,13 @@ public:
                 BufferData.CircularBufferStates[Index].store(EBufferNodeState::EMPTY, RELEASE);
                 return;
             }
-            
+
+            // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
             do
             {
                 SPIN_LOOP_PAUSE();
             }
-            while(BufferData.CircularBufferStates[Index].load(RELAXED) != EBufferNodeState::STORED);
+            while(TMaxThroughput && BufferData.CircularBufferStates[Index].load(RELAXED) != EBufferNodeState::STORED);
         }
     }
 
