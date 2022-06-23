@@ -29,13 +29,13 @@ typedef uint32 uint;
 #define PLATFORM_CACHE_LINE_SIZE 64
 
 #if defined(_MSC_VER)
-    #define HARDWARE_PAUSE()                _mm_pause();
+    #define SPIN_LOOP_PAUSE()                _mm_pause();
     #define FORCEINLINE                     __forceinline
 #else
     #if defined(__clang__) || defined(__GNUC__)
-        #define HARDWARE_PAUSE()            __builtin_ia32_pause();
+        #define SPIN_LOOP_PAUSE()            __builtin_ia32_pause();
     #else
-        #define HARDWARE_PAUSE()            std::this_thread::yield()
+        #define SPIN_LOOP_PAUSE()            std::this_thread::yield()
     #endif
     #define FORCEINLINE                     inline
 #endif
@@ -80,6 +80,7 @@ constexpr uint64 RemapCursorWithMix(const uint64 Index, const uint64 Mix)
 
 /**
  * @cite https://graphics.stanford.edu/~seander/bithacks.html#SwappingBitsXOR
+ * @cite https://stackoverflow.com/questions/12363715/swapping-individual-bits-with-xor
  */
 template<uint TBits>
 constexpr uint64 RemapCursor(const uint64 Index) noexcept
@@ -176,7 +177,52 @@ protected:
     };
 
 public:
-    FORCEINLINE bool Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        if(TSPSC)
+        {
+            return;
+        }
+
+        const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
+        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        BufferData.CircularBuffer[Index] = std::move(NewElement);
+    
+        return;
+    }
+    
+    FORCEINLINE void Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        if(TSPSC)
+        {
+            return;
+        }
+
+        const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
+        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+
+        /* Highly likely to succeed on first iteration. */
+        for(;;)
+        {
+            EBufferNodeState Expected = EBufferNodeState::STORED;
+            if(BufferData.CircularBufferStates[Index].compare_exchange_strong(
+                Expected, EBufferNodeState::LOADING,
+                ACQUIRE, RELAXED))
+            {
+                OutElement = std::forward<FElementType>(BufferData.CircularBuffer[Index]);
+                BufferData.CircularBufferStates[Index].store(EBufferNodeState::EMPTY, RELEASE);
+                return;
+            }
+            
+            do
+            {
+                SPIN_LOOP_PAUSE();
+            }
+            while(BufferData.CircularBufferStates[Index].load(RELAXED) != EBufferNodeState::STORED);
+        }
+    }
+
+    FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
         const FIntegerType CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
         const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
@@ -199,7 +245,7 @@ public:
         return true;
     }
     
-    FORCEINLINE bool Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
         const FIntegerType CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
         const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
