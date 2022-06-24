@@ -20,10 +20,10 @@ using FBenchType = int;
 
 #define BENCH_QUEUE_SIZE            1000000
 
-#if 0
+#if 1
     #define QueueVar                      MyQueue
-    #define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
-    #define PopFunction(_ELEMENT_)        QueueVar.Pop((_ELEMENT_)) 
+    #define PushFunction(_ELEMENT_)       QueueVar.TryPush((_ELEMENT_))
+    #define PopFunction(_ELEMENT_)        QueueVar.TryPop((_ELEMENT_)) 
 #else
     #define QueueVar                    OtherQueue
     #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(34345)

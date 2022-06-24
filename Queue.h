@@ -24,7 +24,7 @@ typedef uint16_t    uint16;
 typedef uint32_t    uint32;
 typedef uint64_t    uint64;
 
-typedef uint32 uint;
+typedef unsigned int uint;
 
 #define PLATFORM_CACHE_LINE_SIZE 64
 
@@ -72,24 +72,31 @@ struct GetIndexShuffleBits<false, array_size, elements_per_cache_line> {
     static int constexpr value = 0;
 };
 
-template<uint TBits>
-constexpr uint64 RemapCursorWithMix(const uint64 Index, const uint64 Mix)
+template<typename TIntegerType, uint TBits>
+constexpr TIntegerType RemapCursorWithMix(const TIntegerType Index, const TIntegerType Mix)
 {
     return Index ^ Mix ^ (Mix << TBits);
 }
 
 /**
+ * Multiple writers/readers contend on the same cache line when storing/loading elements at
+ * subsequent indexes, aka false sharing. For power of 2 ring buffer size it is possible to re-map
+ * the index in such a way that each subsequent element resides on another cache line, which
+ * minimizes contention. This is done by swapping the lowest order N bits (which are the index of
+ * the element within the cache line) with the next N bits (which are the index of the cache line)
+ * of the element index.
+ *
  * @cite https://graphics.stanford.edu/~seander/bithacks.html#SwappingBitsXOR
  * @cite https://stackoverflow.com/questions/12363715/swapping-individual-bits-with-xor
  */
-template<uint TBits>
-constexpr uint64 RemapCursor(const uint64 Index) noexcept
+template<typename TIntegerType, uint TBits>
+constexpr TIntegerType RemapCursor(const TIntegerType Index) noexcept
 {
-    return RemapCursorWithMix<TBits>(Index, ((Index ^ (Index >> TBits)) & ((1U << TBits) - 1)));
+    return RemapCursorWithMix<TIntegerType, TBits>(Index, ((Index ^ (Index >> TBits)) & ((1U << TBits) - 1)));
 }
 
-template<>
-constexpr uint64 RemapCursor<0>(const uint64 Index) noexcept
+template<typename TIntegerType>
+constexpr TIntegerType RemapCursor(const TIntegerType Index) noexcept
 {
     return Index;
 }
@@ -126,10 +133,7 @@ class FBoundedQueue final
     
     enum class EBufferNodeState : uint8
     {
-        EMPTY,
-        STORING,
-        FULL,
-        LOADING
+        EMPTY, STORING, FULL, LOADING
     };
     
     using FElementType = T;
@@ -140,6 +144,8 @@ class FBoundedQueue final
         false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
     static constexpr FIntegerType IndexMask = RoundedSize - 1;
     static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
+
+    static constexpr bool AtomicMode = std::is_same<T, std::atomic<T>>::value;
     
 public:
     FBoundedQueue()
@@ -186,7 +192,9 @@ public:
         }
 
         const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
-        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        const FIntegerType Index = (AtomicMode) ?
+            (0 /*TODO*/) :
+            (RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask));
 
         /* Highly likely to succeed on first iteration. */
         for(;;)
@@ -196,7 +204,7 @@ public:
                 Expected, EBufferNodeState::LOADING,
                 ACQUIRE, RELAXED))
             {
-                BufferData.CircularBuffer[Index] = std::move(NewElement);
+                BufferData.CircularBuffer[Index] = NewElement;
                 BufferData.CircularBufferStates[Index].store(EBufferNodeState::EMPTY, RELEASE);
                 return;
             }
@@ -210,27 +218,29 @@ public:
         }
     }
     
-    FORCEINLINE void Pop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED)
     {
         if(TSPSC)
         {
-            return;
+            return FElementType{};
         }
 
         const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
-        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        const FIntegerType Index = (AtomicMode) ?
+            (0 /*TODO*/) :
+            (RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask));
 
         /* Highly likely to succeed on first iteration. */
         for(;;)
         {
-            EBufferNodeState Expected = EBufferNodeState::STORED;
+            EBufferNodeState Expected = EBufferNodeState::FULL;
             if(BufferData.CircularBufferStates[Index].compare_exchange_strong(
                 Expected, EBufferNodeState::LOADING,
                 ACQUIRE, RELAXED))
             {
-                OutElement = std::forward<FElementType>(BufferData.CircularBuffer[Index]);
+                FElementType Element{(std::move(BufferData.CircularBuffer[Index]))}; 
                 BufferData.CircularBufferStates[Index].store(EBufferNodeState::EMPTY, RELEASE);
-                return;
+                return Element;
             }
 
             // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
@@ -238,7 +248,7 @@ public:
             {
                 SPIN_LOOP_PAUSE();
             }
-            while(TMaxThroughput && BufferData.CircularBufferStates[Index].load(RELAXED) != EBufferNodeState::STORED);
+            while(TMaxThroughput && BufferData.CircularBufferStates[Index].load(RELAXED) != EBufferNodeState::FULL);
         }
     }
 
@@ -258,9 +268,7 @@ public:
             return false;
         }
 
-        const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
-        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        BufferData.CircularBuffer[Index] = std::move(NewElement);
+        Push(NewElement);
     
         return true;
     }
@@ -281,9 +289,7 @@ public:
             return false;
         }
 
-        const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
-        const uint64 Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        OutElement = std::forward<FElementType>(BufferData.CircularBuffer[Index]);
+        OutElement = Pop();
         
         return true;
     }
@@ -322,7 +328,7 @@ public:
     } 
 
 protected:
-    CACHE_ALIGN FBufferData BufferData;
+    CACHE_ALIGN FBufferData                 BufferData;
     
     CACHE_ALIGN std::atomic<FIntegerType>   ProducerCursor;
     CACHE_ALIGN std::atomic<FIntegerType>   ConsumerCursor;
