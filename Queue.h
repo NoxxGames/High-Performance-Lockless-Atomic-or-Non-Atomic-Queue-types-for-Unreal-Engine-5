@@ -50,7 +50,7 @@ typedef unsigned int uint;
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
 #define Q_NOEXCEPT_ENABLED true
 
-template<size_t elements_per_cache_line> struct GetCacheLineIndexBits { static int constexpr value = 0; };
+template<size_t TElementsPerCacheLine> struct GetCacheLineIndexBits { static int constexpr value = 0; };
 template<> struct GetCacheLineIndexBits<256> { static int constexpr value = 8; };
 template<> struct GetCacheLineIndexBits<128> { static int constexpr value = 7; };
 template<> struct GetCacheLineIndexBits< 64> { static int constexpr value = 6; };
@@ -60,11 +60,11 @@ template<> struct GetCacheLineIndexBits<  8> { static int constexpr value = 3; }
 template<> struct GetCacheLineIndexBits<  4> { static int constexpr value = 2; };
 template<> struct GetCacheLineIndexBits<  2> { static int constexpr value = 1; };
 
-template<bool TBool, uint array_size, size_t elements_per_cache_line>
+template<bool TBool, uint TArraySize, size_t TElementsPerCacheLine>
 struct GetIndexShuffleBits {
-    static int constexpr bits = GetCacheLineIndexBits<elements_per_cache_line>::value;
+    static int constexpr bits = GetCacheLineIndexBits<TElementsPerCacheLine>::value;
     static unsigned constexpr min_size = 1U << (bits * 2);
-    static int constexpr value = array_size < min_size ? 0 : bits;
+    static int constexpr value = TArraySize < min_size ? 0 : bits;
 };
 
 template<uint array_size, size_t elements_per_cache_line>
@@ -101,20 +101,60 @@ constexpr TIntegerType RemapCursor(const TIntegerType Index) noexcept
     return Index;
 }
 
-constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(const uint64 QueueSize)
+template<typename T, typename TIntegerType>
+constexpr T& MapElement(T* Elements, TIntegerType Index) noexcept
 {
-    uint64 N = QueueSize;
+    return Elements[Index];
+}
 
-    N--;
-    N |= N >> 1;
-    N |= N >> 2;
-    N |= N >> 4;
-    N |= N >> 8;
-    N |= N >> 16;
-    N |= N >> 32;
-    N++;
-            
-    return N;
+constexpr uint8 RoundQueueSizeUpToNearestPowerOfTwo(uint8 A) noexcept
+{
+    --A;
+    A |= A >> 1;
+    A |= A >> 2;
+    A |= A >> 4;
+    ++A;
+    
+    return A;
+}
+
+constexpr uint16 RoundQueueSizeUpToNearestPowerOfTwo(uint16 A) noexcept
+{
+    --A;
+    A |= A >> 1;
+    A |= A >> 2;
+    A |= A >> 4;
+    A |= A >> 8;
+    ++A;
+    
+    return A;
+}
+
+constexpr uint32 RoundQueueSizeUpToNearestPowerOfTwo(uint32 A) noexcept
+{
+    --A;
+    A |= A >> 1;
+    A |= A >> 2;
+    A |= A >> 4;
+    A |= A >> 8;
+    A |= A >> 16;
+    ++A;
+    
+    return A;
+}
+
+constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(uint64 A) noexcept
+{
+    --A;
+    A |= A >> 1;
+    A |= A >> 2;
+    A |= A >> 4;
+    A |= A >> 8;
+    A |= A >> 16;
+    A |= A >> 32;
+    ++A;
+    
+    return A;
 }
 
 std::memory_order constexpr ACQUIRE     = std::memory_order_acquire;
@@ -122,9 +162,84 @@ std::memory_order constexpr RELEASE     = std::memory_order_release;
 std::memory_order constexpr RELAXED     = std::memory_order_relaxed;
 std::memory_order constexpr SEQ_CONST   = std::memory_order_seq_cst;
 
+template<typename T, uint64 TQueueSize,
+    bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
+class FBoundedQueueBase
+{
+    using FIntegerType = uint;
+    
+    static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
+
+protected:
+    static constexpr FIntegerType RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr FIntegerType IndexMask = RoundedSize - 1;
+    
+public:
+    FBoundedQueueBase()
+        : ProducerCursor{0},
+        ConsumerCursor{0}
+    {
+    }
+    
+    ~FBoundedQueueBase() = default;
+
+    FBoundedQueueBase(const FBoundedQueueBase& other)                 = delete;
+    FBoundedQueueBase(FBoundedQueueBase&& other) noexcept             = delete;
+    FBoundedQueueBase& operator=(const FBoundedQueueBase& other)      = delete;
+    FBoundedQueueBase& operator=(FBoundedQueueBase&& other) noexcept  = delete;
+
+    FORCEINLINE uint64 Size() const noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        return RoundedSize;
+    }
+
+    FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
+
+        if(((CurrentProducerCursor) + 1)
+            == (CurrentConsumerCursor))
+        {
+            return true;
+        }
+
+        return false;
+    }
+    
+    FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
+        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
+
+        if((CurrentProducerCursor)
+            == (CurrentConsumerCursor))
+        {
+            return true;
+        }
+
+        return false;
+    } 
+
+protected:
+    FIntegerType IncrementProducerCursor() noexcept
+    {
+        return ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
+    }
+
+    FIntegerType IncrementConsumerCursor() noexcept
+    {
+        return ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
+    }
+
+protected:
+    CACHE_ALIGN std::atomic<FIntegerType>   ProducerCursor;
+    CACHE_ALIGN std::atomic<FIntegerType>   ConsumerCursor;
+};
+
 template<typename T, uint64 TQueueSize, typename TIntegerType = uint,
     bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-class FBoundedQueue final
+class FBoundedQueue : public FBoundedQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
 {
     /*
      * TODO: static_asserts
@@ -135,17 +250,16 @@ class FBoundedQueue final
     {
         EMPTY, STORING, FULL, LOADING
     };
+
+    using FQueueBaseType = FBoundedQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>;
     
     using FElementType = T;
-    using FIntegerType = TIntegerType;
+    using FIntegerType = uint;
     
-    static constexpr FIntegerType RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr FIntegerType RoundedSize = FQueueBaseType::RoundedSize;
     static constexpr int ShuffleBits = GetIndexShuffleBits<
         false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
-    static constexpr FIntegerType IndexMask = RoundedSize - 1;
-    static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
-
-    static constexpr bool AtomicMode = std::is_same<T, std::atomic<T>>::value;
+    static constexpr FIntegerType IndexMask = FQueueBaseType::IndexMask;
     
 public:
     FBoundedQueue()
@@ -191,10 +305,8 @@ public:
             return;
         }
 
-        const FIntegerType ThisIndex = ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
-        const FIntegerType Index = (AtomicMode) ?
-            (0 /*TODO*/) :
-            (RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask));
+        const FIntegerType ThisIndex = FQueueBaseType::IncrementProducerCursor();
+        const FIntegerType Index = RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask);
 
         /* Highly likely to succeed on first iteration. */
         for(;;)
@@ -208,7 +320,7 @@ public:
                 BufferData.CircularBufferStates[Index].store(EBufferNodeState::EMPTY, RELEASE);
                 return;
             }
-
+        
             // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
             do
             {
@@ -225,10 +337,8 @@ public:
             return FElementType{};
         }
 
-        const FIntegerType ThisIndex = ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
-        const FIntegerType Index = (AtomicMode) ?
-            (0 /*TODO*/) :
-            (RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask));
+        const FIntegerType ThisIndex = FQueueBaseType::IncrementConsumerCursor();
+        const FIntegerType Index = RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask);
 
         /* Highly likely to succeed on first iteration. */
         for(;;)
@@ -293,39 +403,6 @@ public:
         
         return true;
     }
-    
-    FORCEINLINE uint64 Size() const noexcept(Q_NOEXCEPT_ENABLED)
-    {
-        return RoundedSize;
-    }
-
-    FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
-    {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
-
-        if(((CurrentProducerCursor) + 1)
-            == (CurrentConsumerCursor))
-        {
-            return true;
-        }
-
-        return false;
-    }
-    
-    FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
-    {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
-
-        if((CurrentProducerCursor)
-            == (CurrentConsumerCursor))
-        {
-            return true;
-        }
-
-        return false;
-    } 
 
 protected:
     CACHE_ALIGN FBufferData                 BufferData;
