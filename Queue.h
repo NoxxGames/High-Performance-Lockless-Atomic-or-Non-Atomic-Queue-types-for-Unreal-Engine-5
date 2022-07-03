@@ -72,8 +72,8 @@ struct GetIndexShuffleBits<false, array_size, elements_per_cache_line> {
     static int constexpr value = 0;
 };
 
-template<typename TIntegerType, uint TBits>
-constexpr TIntegerType RemapCursorWithMix(const TIntegerType Index, const TIntegerType Mix)
+template<uint TBits>
+constexpr uint RemapCursorWithMix(const uint Index, const uint Mix)
 {
     return Index ^ Mix ^ (Mix << TBits);
 }
@@ -89,55 +89,27 @@ constexpr TIntegerType RemapCursorWithMix(const TIntegerType Index, const TInteg
  * @cite https://graphics.stanford.edu/~seander/bithacks.html#SwappingBitsXOR
  * @cite https://stackoverflow.com/questions/12363715/swapping-individual-bits-with-xor
  */
-template<typename TIntegerType, uint TBits>
-constexpr TIntegerType RemapCursor(const TIntegerType Index) noexcept
+template<uint TBits>
+constexpr uint RemapCursor(const uint Index) noexcept
 {
-    return RemapCursorWithMix<TIntegerType, TBits>(Index, ((Index ^ (Index >> TBits)) & ((1U << TBits) - 1)));
+    return RemapCursorWithMix<uint, TBits>(Index, ((Index ^ (Index >> TBits)) & ((1U << TBits) - 1)));
 }
 
-template<typename TIntegerType>
-constexpr TIntegerType RemapCursor(const TIntegerType Index) noexcept
+constexpr uint RemapCursor(const uint Index) noexcept
 {
     return Index;
 }
 
-template<typename T, typename TIntegerType>
-constexpr T& MapElement(T* Elements, TIntegerType Index) noexcept
+template<typename T>
+constexpr T& MapElement(T* Elements, uint Index) noexcept
 {
     return Elements[Index];
-}
-
-constexpr uint8 RoundQueueSizeUpToNearestPowerOfTwo(uint8 A) noexcept
-{
-    --A;
-    A |= A >> 1;
-    A |= A >> 2;
-    A |= A >> 4;
-    ++A;
-    
-    return A;
-}
-
-constexpr uint16 RoundQueueSizeUpToNearestPowerOfTwo(uint16 A) noexcept
-{
-    --A;
-    A |= A >> 1;
-    A |= A >> 2;
-    A |= A >> 4;
-    A |= A >> 8;
-    ++A;
-    
-    return A;
 }
 
 constexpr uint32 RoundQueueSizeUpToNearestPowerOfTwo(uint32 A) noexcept
 {
     --A;
-    A |= A >> 1;
-    A |= A >> 2;
-    A |= A >> 4;
-    A |= A >> 8;
-    A |= A >> 16;
+    A |= A >> 1; A |= A >> 2; A |= A >> 4; A |= A >> 8; A |= A >> 16;
     ++A;
     
     return A;
@@ -146,12 +118,7 @@ constexpr uint32 RoundQueueSizeUpToNearestPowerOfTwo(uint32 A) noexcept
 constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(uint64 A) noexcept
 {
     --A;
-    A |= A >> 1;
-    A |= A >> 2;
-    A |= A >> 4;
-    A |= A >> 8;
-    A |= A >> 16;
-    A |= A >> 32;
+    A |= A >> 1; A |= A >> 2; A |= A >> 4; A |= A >> 8; A |= A >> 16; A |= A >> 32;
     ++A;
     
     return A;
@@ -162,18 +129,17 @@ std::memory_order constexpr RELEASE     = std::memory_order_release;
 std::memory_order constexpr RELAXED     = std::memory_order_relaxed;
 std::memory_order constexpr SEQ_CONST   = std::memory_order_seq_cst;
 
-template<typename T, uint64 TQueueSize,
+template<typename T, uint TQueueSize,
     bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
 class FBoundedQueueBase
 {
-    using FIntegerType = uint;
     using FElementType = T;
     
     static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
 
 protected:
-    static constexpr FIntegerType RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
-    static constexpr FIntegerType IndexMask = RoundedSize - 1;
+    static constexpr uint RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr uint IndexMask = RoundedSize - 1;
     
 public:
     FBoundedQueueBase()
@@ -182,65 +148,65 @@ public:
     {
     }
     
-    ~FBoundedQueueBase() = default;
+    virtual ~FBoundedQueueBase() = default;
 
     FBoundedQueueBase(const FBoundedQueueBase& other)                 = delete;
     FBoundedQueueBase(FBoundedQueueBase&& other) noexcept             = delete;
     FBoundedQueueBase& operator=(const FBoundedQueueBase& other)      = delete;
     FBoundedQueueBase& operator=(FBoundedQueueBase&& other) noexcept  = delete;
 
-    FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
-    {
-        return false;
-    }
+protected:
+    virtual FORCEINLINE void Push(const FElementType& NewElement) = 0;
     
-    FORCEINLINE FIntegerType Size() const noexcept(Q_NOEXCEPT_ENABLED)
+protected:
+    uint IncrementProducerCursor() noexcept
+    {
+        return ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
+    }
+
+    uint IncrementConsumerCursor() noexcept
+    {
+        return ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
+    }
+
+public:
+    FORCEINLINE uint Size() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         return RoundedSize;
     }
 
     FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
+        const uint CurrentProducerCursor = ProducerCursor.load(RELAXED);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
 
         return (CurrentProducerCursor + 1) == CurrentConsumerCursor;
     }
     
     FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(RELAXED);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
+        const uint CurrentProducerCursor = ProducerCursor.load(RELAXED);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
 
         return CurrentProducerCursor == CurrentConsumerCursor;
     }
 
-    FORCEINLINE FIntegerType Num() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE uint Num() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         // tail_ can be greater than head_ because of consumers doing pop, rather that try_pop, when the queue is empty.
         const int64 Difference = ProducerCursor.load(RELAXED) - ConsumerCursor.load(RELAXED);
+        
         return Difference > 0 ? Difference : 0;
     }
 
 protected:
-    FIntegerType IncrementProducerCursor() noexcept
-    {
-        return ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
-    }
-
-    FIntegerType IncrementConsumerCursor() noexcept
-    {
-        return ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
-    }
-
-protected:
-    CACHE_ALIGN std::atomic<FIntegerType>   ProducerCursor;
-    CACHE_ALIGN std::atomic<FIntegerType>   ConsumerCursor;
+    CACHE_ALIGN std::atomic<uint>   ProducerCursor;
+    CACHE_ALIGN std::atomic<uint>   ConsumerCursor;
 };
 
-template<typename T, uint64 TQueueSize, typename TIntegerType = uint,
+template<typename T, uint64 TQueueSize,
     bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-class FBoundedQueue : public FBoundedQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
+class FBoundedCircularQueue : public FBoundedQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
 {
     /*
      * TODO: static_asserts
@@ -255,28 +221,27 @@ class FBoundedQueue : public FBoundedQueueBase<T, TQueueSize, TTotalOrder, TMaxT
     using FQueueBaseType = FBoundedQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>;
     
     using FElementType = T;
-    using FIntegerType = uint;
     
-    static constexpr FIntegerType RoundedSize = FQueueBaseType::RoundedSize;
+    static constexpr uint RoundedSize = FQueueBaseType::RoundedSize;
     static constexpr int ShuffleBits = GetIndexShuffleBits<
         false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
-    static constexpr FIntegerType IndexMask = FQueueBaseType::IndexMask;
+    static constexpr uint IndexMask = FQueueBaseType::IndexMask;
     
-    static constexpr std::atomic<FIntegerType> ProducerCursor = FQueueBaseType::ProducerCursor;
-    static constexpr std::atomic<FIntegerType> ConsumerCursor = FQueueBaseType::ConsumerCursor;
+    static constexpr std::atomic<uint> ProducerCursor = FQueueBaseType::ProducerCursor;
+    static constexpr std::atomic<uint> ConsumerCursor = FQueueBaseType::ConsumerCursor;
     
 public:
-    FBoundedQueue()
+    FBoundedCircularQueue()
         : FQueueBaseType()
     {
     }
     
-    ~FBoundedQueue() = default;
+    virtual ~FBoundedCircularQueue() = default;
 
-    FBoundedQueue(const FBoundedQueue& other)                 = delete;
-    FBoundedQueue(FBoundedQueue&& other) noexcept             = delete;
-    FBoundedQueue& operator=(const FBoundedQueue& other)      = delete;
-    FBoundedQueue& operator=(FBoundedQueue&& other) noexcept  = delete;
+    FBoundedCircularQueue(const FBoundedCircularQueue& other)                 = delete;
+    FBoundedCircularQueue(FBoundedCircularQueue&& other) noexcept             = delete;
+    FBoundedCircularQueue& operator=(const FBoundedCircularQueue& other)      = delete;
+    FBoundedCircularQueue& operator=(FBoundedCircularQueue&& other) noexcept  = delete;
 
 protected:
     class FBufferData
@@ -301,15 +266,15 @@ protected:
     };
 
 public:
-    FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
+    virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
         if(TSPSC)
         {
             return;
         }
 
-        const FIntegerType ThisIndex = FQueueBaseType::IncrementProducerCursor();
-        const FIntegerType Index = RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask);
+        const uint ThisIndex = FQueueBaseType::IncrementProducerCursor();
+        const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
 
         /* Likely to succeed on first iteration. */
         for(;;)
@@ -340,8 +305,8 @@ public:
             return FElementType{};
         }
 
-        const FIntegerType ThisIndex = FQueueBaseType::IncrementConsumerCursor();
-        const FIntegerType Index = RemapCursor<FIntegerType, ShuffleBits>(ThisIndex & IndexMask);
+        const uint ThisIndex = FQueueBaseType::IncrementConsumerCursor();
+        const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
 
         /* Likely to succeed on first iteration. */
         for(;;)
@@ -367,8 +332,10 @@ public:
 
     FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
+        FQueueBaseType::TryPush22(NewElement);
+        
+        const uint CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
 
         if(((CurrentProducerCursor) + 1)
             == (CurrentConsumerCursor))
@@ -388,8 +355,8 @@ public:
     
     FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const FIntegerType CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
-        const FIntegerType CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
+        const uint CurrentProducerCursor = ProducerCursor.load(ACQUIRE);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(ACQUIRE);
 
         if((CurrentProducerCursor)
             == (CurrentConsumerCursor))
