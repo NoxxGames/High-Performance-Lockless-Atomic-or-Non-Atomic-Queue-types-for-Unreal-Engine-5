@@ -4,9 +4,9 @@
 #include <cstdlib>
 
 #include <atomic>
-#include <functional>
-#include <mutex>
-#include <vector>
+// #include <functional>
+// #include <mutex>
+// #include <vector>
 
 //------------------------------------------------------------//
 //                                                            //
@@ -60,16 +60,18 @@ template<> struct GetCacheLineIndexBits<  8> { static int constexpr value = 3; }
 template<> struct GetCacheLineIndexBits<  4> { static int constexpr value = 2; };
 template<> struct GetCacheLineIndexBits<  2> { static int constexpr value = 1; };
 
-template<bool TBool, uint TArraySize, size_t TElementsPerCacheLine>
-struct GetIndexShuffleBits {
-    static int constexpr bits = GetCacheLineIndexBits<TElementsPerCacheLine>::value;
-    static unsigned constexpr min_size = 1U << (bits * 2);
-    static int constexpr value = TArraySize < min_size ? 0 : bits;
+template<uint TArraySize, size_t TElementsPerCacheLine, bool TUnused = false>
+struct GetIndexShuffleBits
+{
+    static int constexpr Bits = GetCacheLineIndexBits<TElementsPerCacheLine>::Value;
+    static unsigned constexpr MinSize = 1U << (Bits * 2);
+    static int constexpr Value = TArraySize < MinSize ? 0 : Bits;
 };
 
-template<uint array_size, size_t elements_per_cache_line>
-struct GetIndexShuffleBits<false, array_size, elements_per_cache_line> {
-    static int constexpr value = 0;
+template<uint TArraySize, size_t TElementsPerCacheLine>
+struct GetIndexShuffleBits<TArraySize, TElementsPerCacheLine>
+{
+    static int constexpr Value = 0;
 };
 
 template<uint TBits>
@@ -124,11 +126,10 @@ constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(uint64 A) noexcept
     return A;
 }
 
-std::memory_order constexpr ACQUIRE     = std::memory_order_acquire;
-std::memory_order constexpr RELEASE     = std::memory_order_release;
-std::memory_order constexpr RELAXED     = std::memory_order_relaxed;
-std::memory_order constexpr SEQ_CONST   = std::memory_order_seq_cst;
-
+static constexpr std::memory_order ACQUIRE     = std::memory_order_acquire;
+static constexpr std::memory_order RELEASE     = std::memory_order_release;
+static constexpr std::memory_order RELAXED     = std::memory_order_relaxed;
+static constexpr std::memory_order SEQ_CONST   = std::memory_order_seq_cst;
 
 /**
  * @biref Common base type for creating bounded queues.
@@ -139,15 +140,11 @@ class FBoundedQueueCommon
     static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
 
 protected:
-    static constexpr uint RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
-    static constexpr uint IndexMask = RoundedSize - 1;
+    static constexpr uint   RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr uint   IndexMask = RoundedSize - 1;
     
 public:
-    FBoundedQueueCommon()
-        : ProducerCursor{0},
-        ConsumerCursor{0}
-    {
-    }
+    FBoundedQueueCommon() noexcept = default;
     
     virtual ~FBoundedQueueCommon() = default;
 
@@ -198,8 +195,8 @@ public:
     }
 
 protected:
-    CACHE_ALIGN std::atomic<uint>   ProducerCursor;
-    CACHE_ALIGN std::atomic<uint>   ConsumerCursor;
+    CACHE_ALIGN std::atomic<uint>   ProducerCursor = {};
+    CACHE_ALIGN std::atomic<uint>   ConsumerCursor = {};
 };
 
 /**
@@ -215,16 +212,15 @@ protected:
     };
     
     using FQueueBaseType = FBoundedQueueCommon<TQueueSize, TTotalOrder>;
-    
     using FElementType = T;
     
-    static constexpr uint RoundedSize = FQueueBaseType::RoundedSize;
-    static constexpr int ShuffleBits = GetIndexShuffleBits<
-        false, RoundedSize, PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::value;
-    static constexpr uint IndexMask = FQueueBaseType::IndexMask;
+    static constexpr uint               RoundedSize = FQueueBaseType::RoundedSize;
+    static constexpr int                ShuffleBits = GetIndexShuffleBits<RoundedSize,
+                                            PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::Value;
+    static constexpr uint               IndexMask = FQueueBaseType::IndexMask;
     
-    static constexpr std::atomic<uint> ProducerCursor = FQueueBaseType::ProducerCursor;
-    static constexpr std::atomic<uint> ConsumerCursor = FQueueBaseType::ConsumerCursor;
+    static constexpr std::atomic<uint>  ProducerCursor = FQueueBaseType::ProducerCursor;
+    static constexpr std::atomic<uint>  ConsumerCursor = FQueueBaseType::ConsumerCursor;
     
 public:
     FBoundedCircularQueueBase()
@@ -234,7 +230,7 @@ public:
 
 protected:
     static FORCEINLINE void PushBase(const FElementType& NewElement,
-        std::atomic<EBufferNodeState>& State, FElementType& QueueIndex)
+        std::atomic<EBufferNodeState>& State, FElementType& QueueIndex) noexcept(Q_NOEXCEPT_ENABLED)
     {
         if(TSPSC)
         {
@@ -262,6 +258,11 @@ protected:
             while(TMaxThroughput && State.load(RELAXED) != EBufferNodeState::EMPTY);
         }
     }
+
+    static FORCEINLINE FElementType PopBase() noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        return {};
+    }
 };
 
 /**
@@ -276,19 +277,18 @@ CACHE_ALIGN class FBoundedCircularQueue final : public FBoundedCircularQueueBase
     static_assert(TQueueSize > 0, "");
 
     using FQueueBaseType = FBoundedCircularQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>;
-    
     using FElementType = T;
     using EBufferNodeState = typename FQueueBaseType::EBufferNodeState;
     
-    static constexpr uint RoundedSize = FQueueBaseType::RoundedSize;
-    static constexpr int ShuffleBits = FQueueBaseType::ShuffleBits;
-    static constexpr uint IndexMask = FQueueBaseType::IndexMask;
+    static constexpr uint                       RoundedSize = FQueueBaseType::RoundedSize;
+    static constexpr int                        ShuffleBits = FQueueBaseType::ShuffleBits;
+    static constexpr uint                       IndexMask = FQueueBaseType::IndexMask;
     
-    static constexpr std::atomic<uint> ProducerCursor = FQueueBaseType::ProducerCursor;
-    static constexpr std::atomic<uint> ConsumerCursor = FQueueBaseType::ConsumerCursor;
+    static constexpr std::atomic<uint>          ProducerCursor = FQueueBaseType::ProducerCursor;
+    static constexpr std::atomic<uint>          ConsumerCursor = FQueueBaseType::ConsumerCursor;
 
-    CACHE_ALIGN FElementType CircularBuffer[RoundedSize];
-    CACHE_ALIGN std::atomic<EBufferNodeState> CircularBufferStates[RoundedSize];
+    CACHE_ALIGN FElementType                    CircularBuffer[RoundedSize];
+    CACHE_ALIGN std::atomic<EBufferNodeState>   CircularBufferStates[RoundedSize];
     
 public:
     FBoundedCircularQueue()
@@ -298,7 +298,7 @@ public:
     {
     }
     
-    virtual ~FBoundedCircularQueue() = default;
+    ~FBoundedCircularQueue() override = default;
 
     FBoundedCircularQueue(const FBoundedCircularQueue& other)                 = delete;
     FBoundedCircularQueue(FBoundedCircularQueue&& other) noexcept             = delete;
@@ -408,3 +408,7 @@ class FBoundedCircularAtomicQueue final : public FBoundedCircularAtomicQueueBase
 {
     
 };
+
+#undef CACHE_ALIGN
+#undef QUEUE_PADDING_BYTES
+#undef SPIN_LOOP_PAUSE
