@@ -20,7 +20,7 @@ using FBenchType = int;
 
 #define BENCH_QUEUE_SIZE            1000000
 
-#if 1
+#if 0
     #define QueueVar                      MyQueue
     #define PushFunction(_ELEMENT_)       QueueVar.TryPush((_ELEMENT_))
     #define PopFunction(_ELEMENT_)        QueueVar.TryPop((_ELEMENT_)) 
@@ -35,7 +35,7 @@ using FBenchType = int;
 
 namespace QBenchmarks
 {
-    static FBoundedCircularQueue<FBenchType, BENCH_QUEUE_SIZE> MyQueue;
+    static FBoundedCircularQueue<FBenchType, BENCH_QUEUE_SIZE, true, true, false> MyQueue;
     static atomic_queue::AtomicQueue2<FBenchType, BENCH_QUEUE_SIZE, true, true, true, false> OtherQueue;
 
     static std::atomic<int> ThreadsComplete = {0};

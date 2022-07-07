@@ -4,7 +4,7 @@
 #include <cstdlib>
 
 #include <atomic>
-// #include <functional>
+#include <functional>
 // #include <mutex>
 // #include <vector>
 
@@ -94,7 +94,7 @@ constexpr uint RemapCursorWithMix(const uint CursorIndex, const uint Mix)
 template<uint TBits>
 constexpr uint RemapCursor(const uint CursorIndex) noexcept
 {
-    return RemapCursorWithMix<uint, TBits>(
+    return RemapCursorWithMix<TBits>(
         CursorIndex, ((CursorIndex ^ (CursorIndex >> TBits)) & ((1U << TBits) - 1)));
 }
 
@@ -136,7 +136,7 @@ constexpr std::memory_order SEQ_CONST   = std::memory_order_seq_cst;
  * @biref Common base type for creating bounded queues.
  */
 template<typename T, uint TQueueSize, bool TTotalOrder = true>
-CACHE_ALIGN class FBoundedQueueCommon
+class CACHE_ALIGN FBoundedQueueCommon
 {
     static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
 
@@ -157,16 +157,52 @@ public:
     FBoundedQueueCommon& operator=(FBoundedQueueCommon&& other) noexcept  = delete;
     
 protected:
+    template<bool TSPSC>
     FORCEINLINE uint IncrementProducerCursor() noexcept
     {
+        if(TSPSC)
+        {
+            const uint Cursor = ProducerCursor.load(RELAXED);
+            ProducerCursor.store(Cursor + 1, RELAXED);
+            return Cursor;
+        }
+        
         return ProducerCursor.fetch_add(1, FetchAddMemoryOrder);
     }
 
+    template<bool TSPSC>
     FORCEINLINE uint IncrementConsumerCursor() noexcept
     {
+        if(TSPSC)
+        {
+            const uint Cursor = ConsumerCursor.load(RELAXED);
+            ConsumerCursor.store(Cursor + 1, RELAXED);
+            return Cursor;
+        }
+        
         return ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
     }
 
+    FORCEINLINE bool TryPushBase(const std::function<void()>& DerivedPushFunction) noexcept
+    {
+        if(this->Full())
+        {
+            return false;
+        }
+        DerivedPushFunction();
+        return true;
+    }
+
+    FORCEINLINE bool TryPopBase(const std::function<void()>& DerivedPopFunction) noexcept
+    {
+        if(this->Empty())
+        {
+            return false;
+        }
+        DerivedPopFunction();
+        return true;
+    }
+    
 public:
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)      = 0;
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED)                             = 0;
@@ -211,7 +247,7 @@ protected:
  * @brief Base type for creating bounded circular queues.
  */
 template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-CACHE_ALIGN class FBoundedCircularQueueBase : public FBoundedQueueCommon<T, TQueueSize, TTotalOrder>
+class CACHE_ALIGN FBoundedCircularQueueBase : public FBoundedQueueCommon<T, TQueueSize, TTotalOrder>
 {
 protected:
     enum class EBufferNodeState : uint8
@@ -226,9 +262,6 @@ protected:
     static constexpr int                ShuffleBits = GetIndexShuffleBits<RoundedSize,
                                             PLATFORM_CACHE_LINE_SIZE / sizeof(EBufferNodeState)>::Value;
     static constexpr uint               IndexMask = FQueueBaseType::IndexMask;
-    
-    static constexpr std::atomic<uint>  ProducerCursor = FQueueBaseType::ProducerCursor;
-    static constexpr std::atomic<uint>  ConsumerCursor = FQueueBaseType::ConsumerCursor;
     
 public:
     FBoundedCircularQueueBase()
@@ -313,7 +346,7 @@ protected:
  * Bounded circular queue for non-atomic elements.
  */
 template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-CACHE_ALIGN class FBoundedCircularQueue final : public FBoundedCircularQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
+class CACHE_ALIGN FBoundedCircularQueue : public FBoundedCircularQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
 {
     /*
      * TODO: static_asserts
@@ -327,9 +360,6 @@ CACHE_ALIGN class FBoundedCircularQueue final : public FBoundedCircularQueueBase
     static constexpr uint                       RoundedSize = FQueueBaseType::RoundedSize;
     static constexpr int                        ShuffleBits = FQueueBaseType::ShuffleBits;
     static constexpr uint                       IndexMask = FQueueBaseType::IndexMask;
-    
-    static constexpr std::atomic<uint>          ProducerCursor = FQueueBaseType::ProducerCursor;
-    static constexpr std::atomic<uint>          ConsumerCursor = FQueueBaseType::ConsumerCursor;
 
     CACHE_ALIGN FElementType                    CircularBuffer[RoundedSize];
     CACHE_ALIGN std::atomic<EBufferNodeState>   CircularBufferStates[RoundedSize];
@@ -350,80 +380,45 @@ public:
     FBoundedCircularQueue& operator=(FBoundedCircularQueue&& other) noexcept  = delete;
 
 public:
-    /* virtual*/ FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        if(TSPSC)
-        {
-            return;
-        }
-
-        const uint ThisIndex = FQueueBaseType::IncrementProducerCursor();
+        const uint ThisIndex = FQueueBaseType::template IncrementProducerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-
         FQueueBaseType::PushBase(NewElement,
             CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
-    /* virtual*/ FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
+    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        if(TSPSC)
-        {
-            return {};
-        }
-
-        const uint ThisIndex = FQueueBaseType::IncrementConsumerCursor();
+        const uint ThisIndex = FQueueBaseType::template IncrementConsumerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-
         return FQueueBaseType::PopBase(
             CircularBufferStates[Index], CircularBuffer[Index]);
     }
-
-    /* virtual*/ FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
-    {
-        if(this->Full())
-        {
-            return false;
-        }
-
-        if(TSPSC)
-        {
-            return false;
-        }
-
-        Push(NewElement);
     
-        return true;
+    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        return FBoundedQueueCommon<T, TQueueSize, TTotalOrder>::TryPushBase([&](){ Push(NewElement); });
     }
     
-    /* virtual*/ FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        if(this->Empty())
-        {
-            return false;
-        }
-
-        if(TSPSC)
-        {
-            return false;
-        }
-
-        OutElement = Pop();
-        
-        return true;
+        return FBoundedQueueCommon<T, TQueueSize, TTotalOrder>::TryPopBase([&](){ OutElement = Pop(); });
     }
-};
+};/*
 
 template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-CACHE_ALIGN class FBoundedCircularAtomicQueueBase : public FBoundedQueueCommon<T, TQueueSize, TTotalOrder>
+class CACHE_ALIGN FBoundedCircularAtomicQueueBase : public FBoundedQueueCommon<T, TQueueSize, TTotalOrder>
 {
     
 };
 
 template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-CACHE_ALIGN class FBoundedCircularAtomicQueue final : public FBoundedCircularAtomicQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
+class CACHE_ALIGN FBoundedCircularAtomicQueue final : public FBoundedCircularAtomicQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
 {
 
 };
+*/
 
 #undef CACHE_ALIGN
 #undef QUEUE_PADDING_BYTES
