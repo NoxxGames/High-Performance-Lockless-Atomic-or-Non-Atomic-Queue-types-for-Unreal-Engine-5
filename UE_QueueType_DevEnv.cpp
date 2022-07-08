@@ -35,7 +35,7 @@ using FBenchType = int;
 
 namespace QBenchmarks
 {
-    static FBoundedCircularQueue<FBenchType, BENCH_QUEUE_SIZE, true, true, false> MyQueue;
+    static TBoundedCircularQueue<FBenchType, BENCH_QUEUE_SIZE, true, true, false> MyQueue;
     static atomic_queue::AtomicQueue2<FBenchType, BENCH_QUEUE_SIZE, true, true, true, false> OtherQueue;
 
     static std::atomic<int> ThreadsComplete = {0};
