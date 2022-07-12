@@ -51,14 +51,14 @@ typedef unsigned int uint;
 #define Q_NOEXCEPT_ENABLED true
 
 template<size_t TElementsPerCacheLine> struct GetCacheLineIndexBits { static int constexpr value = 0; };
-template<> struct GetCacheLineIndexBits<256> { static int constexpr value = 8; };
-template<> struct GetCacheLineIndexBits<128> { static int constexpr value = 7; };
-template<> struct GetCacheLineIndexBits< 64> { static int constexpr value = 6; };
-template<> struct GetCacheLineIndexBits< 32> { static int constexpr value = 5; };
-template<> struct GetCacheLineIndexBits< 16> { static int constexpr value = 4; };
-template<> struct GetCacheLineIndexBits<  8> { static int constexpr value = 3; };
-template<> struct GetCacheLineIndexBits<  4> { static int constexpr value = 2; };
-template<> struct GetCacheLineIndexBits<  2> { static int constexpr value = 1; };
+template<> struct GetCacheLineIndexBits<256> { static int constexpr Value = 8; };
+template<> struct GetCacheLineIndexBits<128> { static int constexpr Value = 7; };
+template<> struct GetCacheLineIndexBits< 64> { static int constexpr Value = 6; };
+template<> struct GetCacheLineIndexBits< 32> { static int constexpr Value = 5; };
+template<> struct GetCacheLineIndexBits< 16> { static int constexpr Value = 4; };
+template<> struct GetCacheLineIndexBits<  8> { static int constexpr Value = 3; };
+template<> struct GetCacheLineIndexBits<  4> { static int constexpr Value = 2; };
+template<> struct GetCacheLineIndexBits<  2> { static int constexpr Value = 1; };
 
 template<uint TArraySize, size_t TElementsPerCacheLine, bool TUnused = false>
 struct GetIndexShuffleBits
@@ -155,14 +155,35 @@ protected:
 public:
     TBoundedQueueCommon() noexcept = default;
     
-    virtual ~TBoundedQueueCommon() = default;
+    virtual ~TBoundedQueueCommon() noexcept = default;
 
-    TBoundedQueueCommon(const TBoundedQueueCommon& other)                 = delete;
-    TBoundedQueueCommon(TBoundedQueueCommon&& other) noexcept             = delete;
-    TBoundedQueueCommon& operator=(const TBoundedQueueCommon& other)      = delete;
-    TBoundedQueueCommon& operator=(TBoundedQueueCommon&& other) noexcept  = delete;
+    TBoundedQueueCommon(const TBoundedQueueCommon& Other) noexcept
+        : ProducerCursor(Other.ProducerCursor.load(RELAXED)),
+        ConsumerCursor(Other.ConsumerCursor.load(RELAXED))
+    {
+    }
+    
+    TBoundedQueueCommon& operator=(const TBoundedQueueCommon& Other) noexcept
+    {
+        ProducerCursor.store(Other.ProducerCursor.load(RELAXED), RELAXED);
+        ConsumerCursor.store(Other.ConsumerCursor.load(RELAXED), RELAXED);
+        return *this;
+    }
+
+    TBoundedQueueCommon(TBoundedQueueCommon&& Other) noexcept             = delete;
+    TBoundedQueueCommon& operator=(TBoundedQueueCommon&& Other) noexcept  = delete;
     
 protected:
+    virtual void Swap(const TBoundedQueueCommon& Other) noexcept
+    {
+        const uint ThisProducerCursor = ProducerCursor.load(RELAXED);
+        const uint ThisConsumerCursor = ConsumerCursor.load(RELAXED);
+        ProducerCursor.store(Other.ProducerCursor.load(RELAXED), RELAXED);
+        ConsumerCursor.store(Other.ConsumerCursor.load(RELAXED), RELAXED);
+        Other.ProducerCursor.store(ThisProducerCursor, RELAXED);
+        Other.ConsumerCursor.store(ThisConsumerCursor, RELAXED);
+    }
+    
     template<bool TSPSC>
     FORCEINLINE uint IncrementProducerCursor() noexcept
     {
@@ -273,8 +294,8 @@ protected:
     static constexpr uint               TypeSize =    sizeof(FElementType);
     static constexpr uint               StateSize =   sizeof(std::atomic<EBufferNodeState>);
     static constexpr uint               RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                ShuffleBits = GetIndexShuffleBits<RoundedSize,
-                                            PLATFORM_CACHE_LINE_SIZE / (TypeSize > StateSize ? TypeSize : StateSize)>::Value;
+    static constexpr int                ShuffleBits = GetCacheLineIndexBits<
+                                            PLATFORM_CACHE_LINE_SIZE / StateSize>::Value;
     static constexpr uint               IndexMask = TQueueBaseType::IndexMask;
     
 public:
@@ -283,11 +304,19 @@ public:
     {
     }
 
-    virtual ~TBoundedCircularQueueBase() override = default;
+    virtual ~TBoundedCircularQueueBase() noexcept override = default;
 
-    TBoundedCircularQueueBase(const TBoundedCircularQueueBase& other)                   = delete;
+    TBoundedCircularQueueBase(const TBoundedCircularQueueBase& Other) noexcept
+    {
+        TQueueBaseType::TQueueBaseType(Other);
+    }
+    
+    TBoundedCircularQueueBase& operator=(const TBoundedCircularQueueBase& Other) noexcept
+    {
+        return TQueueBaseType::operator=(Other);
+    }
+    
     TBoundedCircularQueueBase(TBoundedCircularQueueBase&& other) noexcept               = delete;
-    TBoundedCircularQueueBase& operator=(const TBoundedCircularQueueBase& other)        = delete;
     TBoundedCircularQueueBase& operator=(TBoundedCircularQueueBase&& other) noexcept    = delete;
 
     virtual FORCEINLINE void Push(const FElementType&NewElement) noexcept(true) override        = 0;
@@ -382,12 +411,12 @@ public:
     {
     }
     
-    virtual ~TBoundedCircularQueue() override = default; 
+    virtual ~TBoundedCircularQueue() noexcept override = default; 
 
-    TBoundedCircularQueue(const TBoundedCircularQueue& other)                 = delete;
-    TBoundedCircularQueue(TBoundedCircularQueue&& other) noexcept             = delete;
-    TBoundedCircularQueue& operator=(const TBoundedCircularQueue& other)      = delete;
-    TBoundedCircularQueue& operator=(TBoundedCircularQueue&& other) noexcept  = delete;
+    TBoundedCircularQueue(const TBoundedCircularQueue& other) noexcept                  = delete;
+    TBoundedCircularQueue(TBoundedCircularQueue&& other) noexcept                       = delete;
+    TBoundedCircularQueue& operator=(const TBoundedCircularQueue& other) noexcept       = delete;
+    TBoundedCircularQueue& operator=(TBoundedCircularQueue&& other) noexcept            = delete;
     
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
@@ -446,11 +475,14 @@ public:
         }
     }
 
-    virtual ~TBoundedCircularQueueHeap()
+    virtual ~TBoundedCircularQueueHeap() noexcept
     {
         if(CircularBuffer)
         {
             free(CircularBuffer);
+        }
+        if(CircularBufferStates)
+        {
             free(CircularBufferStates);
         }
     }
@@ -465,7 +497,7 @@ public:
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         TQueueBaseType::PushBase(NewElement,
-            CircularBuffer[Index].State, CircularBuffer[Index].Data);
+            CircularBufferStates[Index], CircularBuffer[Index]);
     }
 
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
@@ -473,7 +505,7 @@ public:
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         return TQueueBaseType::PopBase(
-            CircularBuffer[Index].State, CircularBuffer[Index].Data);
+            CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
     virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
