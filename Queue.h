@@ -154,7 +154,11 @@ protected:
     static constexpr uint   IndexMask = RoundedSize - 1;
     
 public:
-    TBoundedQueueCommon() noexcept = default;
+    TBoundedQueueCommon(const uint InProducerCursor = 0, const uint InConsumerCursor = 0) noexcept
+        : ProducerCursor{InProducerCursor},
+        ConsumerCursor{InConsumerCursor}
+    {
+    }
     
     virtual ~TBoundedQueueCommon() noexcept = default;
 
@@ -170,9 +174,6 @@ public:
         ConsumerCursor.store(Other.ConsumerCursor.load(RELAXED), RELAXED);
         return *this;
     }
-
-    TBoundedQueueCommon(TBoundedQueueCommon&&) noexcept             = delete;
-    TBoundedQueueCommon& operator=(TBoundedQueueCommon&&) noexcept  = delete;
 
     void Swap(const TBoundedQueueCommon& Other) noexcept
     {
@@ -294,15 +295,13 @@ protected:
     using TQueueBaseType                = TBoundedQueueCommon<T, TQueueSize, TTotalOrder>;
     using FElementType                  = T;
 
-    static constexpr uint               TypeSize =    sizeof(FElementType);
-    static constexpr uint               StateSize =   sizeof(std::atomic<EBufferNodeState>);
+    static constexpr uint               TypeSize = sizeof(FElementType);
+    static constexpr uint               StateSize = sizeof(std::atomic<EBufferNodeState>);
     static constexpr uint               RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                ShuffleBits = GetCacheLineIndexBits<
-                                            PLATFORM_CACHE_LINE_SIZE / StateSize>::Value;
     static constexpr uint               IndexMask = TQueueBaseType::IndexMask;
     
 public:
-    TBoundedCircularQueueBase()
+    TBoundedCircularQueueBase() noexcept
         : TQueueBaseType()
     {
     }
@@ -319,8 +318,6 @@ public:
         return TQueueBaseType::operator=(Other);
     }
     
-    TBoundedCircularQueueBase(TBoundedCircularQueueBase&&) noexcept               = delete;
-    TBoundedCircularQueueBase& operator=(TBoundedCircularQueueBase&&) noexcept    = delete;
 
     virtual FORCEINLINE void Push(const FElementType&NewElement) noexcept(true) override        = 0;
     virtual FORCEINLINE FElementType Pop() noexcept(true) override                              = 0;
@@ -398,16 +395,19 @@ class CACHE_ALIGN TBoundedCircularQueue : public TBoundedCircularQueueBase<T, TQ
     using TQueueBaseType        = TBoundedCircularQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>;
     using FElementType          = T;
     using EBufferNodeState      = typename TQueueBaseType::EBufferNodeState;
-    
+
+    static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
+    static constexpr uint                       StateSize = TQueueBaseType::StateSize;
     static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                        ShuffleBits = TQueueBaseType::ShuffleBits;
+    static constexpr int                        ShuffleBits = GetIndexShuffleBits<TQueueSize,
+                                                    PLATFORM_CACHE_LINE_SIZE / StateSize>::Value;
     static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
 
     CACHE_ALIGN FElementType                    CircularBuffer[RoundedSize];
     CACHE_ALIGN std::atomic<EBufferNodeState>   CircularBufferStates[RoundedSize];
 
 public:
-    TBoundedCircularQueue()
+    TBoundedCircularQueue() noexcept
         : TQueueBaseType(),
         CircularBuffer{},
         CircularBufferStates{EBufferNodeState::EMPTY}
@@ -417,9 +417,7 @@ public:
     virtual ~TBoundedCircularQueue() noexcept override = default; 
 
     TBoundedCircularQueue(const TBoundedCircularQueue&) noexcept                  = delete;
-    TBoundedCircularQueue(TBoundedCircularQueue&&) noexcept                       = delete;
     TBoundedCircularQueue& operator=(const TBoundedCircularQueue&) noexcept       = delete;
-    TBoundedCircularQueue& operator=(TBoundedCircularQueue&&) noexcept            = delete;
     
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
@@ -455,16 +453,19 @@ class CACHE_ALIGN TBoundedCircularQueueHeap : public TBoundedCircularQueueBase<T
     using TQueueBaseType        = TBoundedCircularQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>;
     using FElementType          = T;
     using EBufferNodeState      = typename TQueueBaseType::EBufferNodeState;
-    
+
+    static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
+    static constexpr uint                       StateSize = TQueueBaseType::StateSize;
     static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                        ShuffleBits = TQueueBaseType::ShuffleBits;
+    static constexpr int                        ShuffleBits = GetCacheLineIndexBits<
+                                                    PLATFORM_CACHE_LINE_SIZE / StateSize>::Value;
     static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
     
     CACHE_ALIGN FElementType                    *CircularBuffer;
     CACHE_ALIGN std::atomic<EBufferNodeState>   *CircularBufferStates;
     
 public:
-    TBoundedCircularQueueHeap()
+    TBoundedCircularQueueHeap() noexcept
         : TQueueBaseType(),
         CircularBuffer(static_cast<FElementType*>(
             calloc(TQueueSize, sizeof(FElementType)))),
@@ -491,9 +492,7 @@ public:
     }
 
     TBoundedCircularQueueHeap(const TBoundedCircularQueueHeap& other)                   = delete;
-    TBoundedCircularQueueHeap(TBoundedCircularQueueHeap&& other) noexcept               = delete;
     TBoundedCircularQueueHeap& operator=(const TBoundedCircularQueueHeap& other)        = delete;
-    TBoundedCircularQueueHeap& operator=(TBoundedCircularQueueHeap&& other) noexcept    = delete;
 
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
@@ -533,16 +532,13 @@ public:
 template<typename T, uint TQueueSize, T TNil = T{}, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
 class CACHE_ALIGN TBoundedCircularAtomicQueueBase : public TBoundedQueueCommon<T, TQueueSize, TTotalOrder>
 {
+protected:
     using TQueueBaseType                = TBoundedQueueCommon<T, TQueueSize, TTotalOrder>;
     using FElementType                  = T;
 
-    static constexpr uint               TypeSize =    sizeof(std::atomic<FElementType>);
+    static constexpr uint               TypeSize = sizeof(std::atomic<FElementType>);
     static constexpr uint               RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                ShuffleBits = GetCacheLineIndexBits<
-                                            PLATFORM_CACHE_LINE_SIZE / TypeSize>::Value;
     static constexpr uint               IndexMask = TQueueBaseType::IndexMask;
-
-    // CACHE_ALIGN std::atomic<FElementType>            CircularBuffer[RoundedSize];
     
 public:
     using TElementType = FElementType;
@@ -551,13 +547,6 @@ public:
         : TQueueBaseType()
     {
         assert(std::atomic<FElementType>{TNil}.is_lock_free());
-        //if(FElementType{} != TNil)
-        //{
-        //    for(uint i = 0; i < RoundedSize; ++i)
-        //    {
-         //       CircularBuffer[i].store(TNil, RELAXED);
-        //    }
-        //}
     }
     
     virtual ~TBoundedCircularAtomicQueueBase() noexcept override = default;
@@ -623,13 +612,61 @@ protected:
     }
 };
 
-/*
-template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-class CACHE_ALIGN FBoundedCircularAtomicQueue : public FBoundedCircularAtomicQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
+template<typename T, uint TQueueSize, T TNil = T{}, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
+class CACHE_ALIGN TBoundedCircularAtomicQueue : public TBoundedCircularAtomicQueueBase<T, TNil, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
 {
+    using TQueueBaseTypeCommon  = TBoundedQueueCommon<T, TQueueSize, TTotalOrder>;
+    using TQueueBaseType        = TBoundedCircularAtomicQueueBase<T, TQueueSize, TNil, TTotalOrder, TMaxThroughput, TSPSC>;
+    using FElementType          = T;
 
+    static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
+    static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
+    static constexpr int                        ShuffleBits = GetIndexShuffleBits<RoundedSize,
+                                                    PLATFORM_CACHE_LINE_SIZE / TypeSize>::Value;
+    static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
+
+    CACHE_ALIGN std::atomic<FElementType>       CircularBuffer[RoundedSize];
+
+public:
+    TBoundedCircularAtomicQueue() noexcept
+        : TQueueBaseType()
+    {
+        if(FElementType{} != TNil)
+        {
+            for(uint i = 0; i < RoundedSize; ++i)
+            {
+               CircularBuffer[i].store(TNil, RELAXED);
+            }
+        }
+    }
+
+    virtual ~TBoundedCircularAtomicQueue() noexcept override = default;
+
+    TBoundedCircularAtomicQueue(const TBoundedCircularAtomicQueue& other)                   = delete;
+    TBoundedCircularAtomicQueue& operator=(const TBoundedCircularAtomicQueue& other)        = delete;
+
+    virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        
+    }
+    
+    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        return {};
+    }
+    
+    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        return false;
+    }
+    
+    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        return false;
+    }
 };
 
+/*
 template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
 class CACHE_ALIGN FBoundedCircularAtomicQueueHeap : public FBoundedCircularAtomicQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
 {
