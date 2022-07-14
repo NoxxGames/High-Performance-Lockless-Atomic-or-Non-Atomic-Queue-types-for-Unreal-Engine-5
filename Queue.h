@@ -1,6 +1,6 @@
 ﻿#pragma once
 
-#include <cstdio>
+// #include <cstdio>
 #include <cstdlib>
 
 #include <atomic>
@@ -186,8 +186,6 @@ public:
     }
     
 protected:
-
-    
     template<bool TSPSC>
     FORCEINLINE uint IncrementProducerCursor() noexcept
     {
@@ -423,26 +421,24 @@ public:
     {
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        TQueueBaseType::PushBase(NewElement,
-            CircularBufferStates[Index], CircularBuffer[Index]);
+        TQueueBaseType::PushBase(NewElement, CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        return TQueueBaseType::PopBase(
-            CircularBufferStates[Index], CircularBuffer[Index]);
+        return TQueueBaseType::PopBase(CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
     virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return TQueueBaseTypeCommon::TryPushBase([&](){ Push(NewElement); });
+        return TQueueBaseTypeCommon::TryPushBase([this, &NewElement](){ Push(NewElement); });
     }
     
     virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return TQueueBaseTypeCommon::TryPopBase([&](){ OutElement = Pop(); });
+        return TQueueBaseTypeCommon::TryPopBase([this, &OutElement](){ OutElement = Pop(); });
     }
 };
 
@@ -498,26 +494,24 @@ public:
     {
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        TQueueBaseType::PushBase(NewElement,
-            CircularBufferStates[Index], CircularBuffer[Index]);
+        TQueueBaseType::PushBase(NewElement, CircularBufferStates[Index], CircularBuffer[Index]);
     }
 
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
         const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
-        return TQueueBaseType::PopBase(
-            CircularBufferStates[Index], CircularBuffer[Index]);
+        return TQueueBaseType::PopBase(CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
     virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return TQueueBaseType::TryPushBase([&](){ Push(NewElement); });
+        return TQueueBaseTypeCommon::TryPushBase([this, &NewElement](){ Push(NewElement); });
     }
     
     virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return TQueueBaseTypeCommon::TryPopBase([&](){ OutElement = Pop(); });
+        return TQueueBaseTypeCommon::TryPopBase([this, &OutElement](){ OutElement = Pop(); });
     }
 };
 
@@ -647,22 +641,26 @@ public:
 
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        
+        const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
+        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        TQueueBaseType::PushBase(NewElement, Element);
     }
     
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return {};
+        const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
+        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        return TQueueBaseType::PopBase(Element);
     }
     
     virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return false;
+        return TQueueBaseTypeCommon::TryPush([this, &NewElement](){ Push(NewElement); });
     }
     
     virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
-        return false;
+        return TQueueBaseTypeCommon::TryPop([this, &OutElement](){ OutElement = Pop(); });
     }
 };
 
