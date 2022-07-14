@@ -2,41 +2,23 @@
 #include <atomic>
 
 #include "Queue.h"
-#include "LocalStuff/AtomicQueue.h"
-#include "LocalStuff/MyTimer.h"
 
 #define CORE_COUNT 8
-
-#define ELEMENTS_TO_PROCESS (100000000 / CORE_COUNT)
-
-using FBenchType = int;
-
-//#define BENCH_START_QUEUE_SIZE      128
-//#define BENCH_MAX_QUEUE_SIZE        1000000
-//#define BENCH_START_THREAD_COUNT    2
-//#define BENCH_MAX_THREAD_COUNT      32
-//#define BENCH_START_CYCLE_COUNT     16
-//#define BENCH_MAX_CYCLE_COUNT       1000000
-
+#define ELEMENTS_TO_PROCESS         (6000000 / CORE_COUNT)
 #define BENCH_QUEUE_SIZE            1000000
 
-#if 0
-    #define QueueVar                      MyQueue
-    #define PushFunction(_ELEMENT_)       QueueVar.TryPush((_ELEMENT_))
-    #define PopFunction(_ELEMENT_)        QueueVar.TryPop((_ELEMENT_)) 
-#else
-    #define QueueVar                    OtherQueue
-    #define PushFunction(_ELEMENT_)     QueueVar.push<FBenchType>(34345)
-    #define PopFunction(_ELEMENT_)      (_ELEMENT_) = QueueVar.pop() 
-#endif
+#define QueueVar                      MyQueue
+#define PushFunction(_ELEMENT_)       QueueVar.Push((_ELEMENT_))
+#define PopFunction(_ELEMENT_)        (_ELEMENT_) = QueueVar.Pop() 
 
 #define BENCH_SLEEP_UNIT(_SLEEP_LENGTH_) std::chrono::milliseconds((_SLEEP_LENGTH_))
 #define BENCH_SLEEP_LENGTH 1
 
+using FBenchType = int;
+
 namespace QBenchmarks
 {
     static TBoundedCircularQueue<FBenchType, BENCH_QUEUE_SIZE, true, true, false> MyQueue;
-    static atomic_queue::AtomicQueue2<FBenchType, BENCH_QUEUE_SIZE, true, true, true, false> OtherQueue;
 
     static std::atomic<int> ThreadsComplete = {0};
 
@@ -76,66 +58,6 @@ namespace QBenchmarks
         }
 
         WaitForCompletion(ThreadCount * 2);
-    }
-
-    static FORCEINLINE void NoDelayHighProducerContentionRegular(const int ThreadCount, const int CycleCount,
-        std::memory_order MemoryOrder = std::memory_order_acquire)
-    {
-        for(int i = 0; i < ThreadCount; ++i)
-        {
-            std::thread([&]() // producer
-            {
-                for(int j = 0; j < CycleCount; ++j)
-                {
-                    const FBenchType ValueToPush = j;
-                    // PushFunction(ValueToPush);
-                }
-                ThreadsComplete.fetch_add(1);
-            }).detach();
-        }
-
-        std::thread([&]() // consumer
-        {
-            const int AdjustedCycleCount = CycleCount * ThreadCount;
-            for(int j = 0; j < AdjustedCycleCount; ++j)
-            {
-                FBenchType PoppedValue = 0;
-                // PopFunction(PoppedValue);
-            }
-            ThreadsComplete.fetch_add(1);
-        }).detach();
-
-        WaitForCompletion(ThreadCount + 1);
-    }
-
-    static FORCEINLINE void NoDelayHighConsumerContentionRegular(const int ThreadCount, const int CycleCount,
-        std::memory_order MemoryOrder = std::memory_order_acquire)
-    {
-        std::thread([&]()  // producer
-        {
-            for(int j = 0; j < CycleCount; ++j)
-            {
-                const FBenchType ValueToPush = j;
-                // PushFunction(ValueToPush);
-            }
-            ThreadsComplete.fetch_add(1);
-        }).detach();
-        
-        for(int i = 0; i < ThreadCount; ++i)
-        {
-            std::thread([&]() // consumer
-            {
-                const int AdjustedCycleCount = CycleCount * ThreadCount;
-                for(int j = 0; j < AdjustedCycleCount; ++j)
-                {
-                    FBenchType PoppedValue = 0;
-                    // PopFunction(PoppedValue);
-                }
-                ThreadsComplete.fetch_add(1);
-            }).detach();
-        }
-
-        WaitForCompletion(ThreadCount + 1);
     }
 }
 

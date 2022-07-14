@@ -49,7 +49,7 @@ typedef unsigned int uint;
 
 #define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
-#define Q_NOEXCEPT_ENABLED true
+#define Q_NOEXCEPT_ENABLED false
 
 template<size_t TElementsPerCacheLine> struct GetCacheLineIndexBits { static int constexpr value = 0; };
 template<> struct GetCacheLineIndexBits<256> { static int constexpr Value = 8; };
@@ -154,28 +154,28 @@ protected:
     static constexpr uint   IndexMask = RoundedSize - 1;
     
 public:
-    TBoundedQueueCommon(const uint InProducerCursor = 0, const uint InConsumerCursor = 0) noexcept
+    TBoundedQueueCommon(const uint InProducerCursor = 0, const uint InConsumerCursor = 0) noexcept(Q_NOEXCEPT_ENABLED)
         : ProducerCursor{InProducerCursor},
         ConsumerCursor{InConsumerCursor}
     {
     }
     
-    virtual ~TBoundedQueueCommon() noexcept = default;
+    virtual ~TBoundedQueueCommon() noexcept(Q_NOEXCEPT_ENABLED) = default;
 
-    TBoundedQueueCommon(const TBoundedQueueCommon& Other) noexcept
+    TBoundedQueueCommon(const TBoundedQueueCommon& Other) noexcept(Q_NOEXCEPT_ENABLED)
         : ProducerCursor(Other.ProducerCursor.load(RELAXED)),
         ConsumerCursor(Other.ConsumerCursor.load(RELAXED))
     {
     }
     
-    TBoundedQueueCommon& operator=(const TBoundedQueueCommon& Other) noexcept
+    TBoundedQueueCommon& operator=(const TBoundedQueueCommon& Other) noexcept(Q_NOEXCEPT_ENABLED)
     {
         ProducerCursor.store(Other.ProducerCursor.load(RELAXED), RELAXED);
         ConsumerCursor.store(Other.ConsumerCursor.load(RELAXED), RELAXED);
         return *this;
     }
 
-    void Swap(const TBoundedQueueCommon& Other) noexcept
+    void Swap(const TBoundedQueueCommon& Other) noexcept(Q_NOEXCEPT_ENABLED)
     {
         const uint ThisProducerCursor = ProducerCursor.load(RELAXED);
         const uint ThisConsumerCursor = ConsumerCursor.load(RELAXED);
@@ -187,7 +187,7 @@ public:
     
 protected:
     template<bool TSPSC>
-    FORCEINLINE uint IncrementProducerCursor() noexcept
+    FORCEINLINE uint IncrementProducerCursor() noexcept(Q_NOEXCEPT_ENABLED)
     {
         if(TSPSC)
         {
@@ -200,7 +200,7 @@ protected:
     }
 
     template<bool TSPSC>
-    FORCEINLINE uint IncrementConsumerCursor() noexcept
+    FORCEINLINE uint IncrementConsumerCursor() noexcept(Q_NOEXCEPT_ENABLED)
     {
         if(TSPSC)
         {
@@ -212,7 +212,7 @@ protected:
         return ConsumerCursor.fetch_add(1, FetchAddMemoryOrder);
     }
 
-    FORCEINLINE bool TryPushBase(const std::function<void()>& DerivedPushFunction) noexcept
+    FORCEINLINE bool TryPushBase(const std::function<void()>& DerivedPushFunction) noexcept(Q_NOEXCEPT_ENABLED)
     {
         if(this->Full())
         {
@@ -222,7 +222,7 @@ protected:
         return true;
     }
 
-    FORCEINLINE bool TryPopBase(const std::function<void()>& DerivedPopFunction) noexcept
+    FORCEINLINE bool TryPopBase(const std::function<void()>& DerivedPopFunction) noexcept(Q_NOEXCEPT_ENABLED)
     {
         if(this->Empty())
         {
@@ -268,8 +268,8 @@ public:
     }
 
 protected:
-    CACHE_ALIGN std::atomic<uint>   ProducerCursor = {};
-    CACHE_ALIGN std::atomic<uint>   ConsumerCursor = {};
+    CACHE_ALIGN std::atomic<uint>   ProducerCursor;
+    CACHE_ALIGN std::atomic<uint>   ConsumerCursor;
 };
 
 ////////////////////////////////////////////////////////////////////////////
@@ -317,10 +317,10 @@ public:
     }
     
 
-    virtual FORCEINLINE void Push(const FElementType&NewElement) noexcept(true) override        = 0;
-    virtual FORCEINLINE FElementType Pop() noexcept(true) override                              = 0;
-    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(true) override    = 0;
-    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(true) override           = 0;
+    virtual FORCEINLINE void Push(const FElementType&NewElement) noexcept(Q_NOEXCEPT_ENABLED) override        = 0;
+    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override                              = 0;
+    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override    = 0;
+    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override           = 0;
 
 protected:
     static FORCEINLINE void PushBase(const FElementType& NewElement,
@@ -340,7 +340,7 @@ protected:
                 ACQUIRE, RELAXED))
             {
                 QueueIndex = NewElement;
-                State.store(EBufferNodeState::EMPTY, RELEASE);
+                State.store(EBufferNodeState::FULL, RELEASE);
                 return;
             }
         
@@ -414,8 +414,8 @@ public:
     
     virtual ~TBoundedCircularQueue() noexcept override = default; 
 
-    TBoundedCircularQueue(const TBoundedCircularQueue&) noexcept                  = delete;
-    TBoundedCircularQueue& operator=(const TBoundedCircularQueue&) noexcept       = delete;
+    TBoundedCircularQueue(const TBoundedCircularQueue&) noexcept(Q_NOEXCEPT_ENABLED)                  = delete;
+    TBoundedCircularQueue& operator=(const TBoundedCircularQueue&) noexcept(Q_NOEXCEPT_ENABLED)       = delete;
     
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
