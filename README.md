@@ -8,12 +8,12 @@ Currently a work in progress. Queue types are in Queue.h
 
 ## Types to be created:
 
-- [x] TBoundedQueueComon (C)
+- [x] TBoundedQueueComon
 1. [x] Regular Type Versions:
-   - [x] TBoundedCircularQueueBase (C)
-     - [x] TBoundedCircularQueue (C)
-     - [x] TBoundedCircularQueueHeap (C)
+   - [x] TBoundedCircularQueueBase
+     - [x] TBoundedCircularQueue
+     - [x] TBoundedCircularQueueHeap
 2. [ ] Atomic Versions:
-   - [x] TBoundedCircularAtomicQueueBase (C)
-     - [x] TBoundedCircularAtomicQueue (C)
-     - [ ] FBoundedCircularAtomicQueueHeap (WIP)
+   - [x] TBoundedCircularAtomicQueueBase
+     - [x] TBoundedCircularAtomicQueue
+     - [ ] FBoundedCircularAtomicQueueHeap
