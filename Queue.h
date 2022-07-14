@@ -47,9 +47,8 @@ typedef unsigned int uint;
 //                                                            //
 //------------------------------------------------------------//
 
-#define QUEUE_PADDING_BYTES(_TYPE_SIZES_) (PLATFORM_CACHE_LINE_SIZE - (_TYPE_SIZES_) % PLATFORM_CACHE_LINE_SIZE)
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
-#define Q_NOEXCEPT_ENABLED false
+#define Q_NOEXCEPT_ENABLED true
 
 template<size_t TElementsPerCacheLine> struct GetCacheLineIndexBits { static int constexpr value = 0; };
 template<> struct GetCacheLineIndexBits<256> { static int constexpr Value = 8; };
@@ -76,7 +75,7 @@ struct GetIndexShuffleBits<TArraySize, TElementsPerCacheLine>
 };
 
 template<uint TBits>
-constexpr uint RemapCursorWithMix(const uint CursorIndex, const uint Mix)
+constexpr uint RemapCursorWithMix(const uint CursorIndex, const uint Mix) noexcept
 {
     return CursorIndex ^ Mix ^ (Mix << TBits);
 }
