@@ -327,7 +327,15 @@ protected:
     {
         if(TSPSC)
         {
-            return;
+            while(State.load(ACQUIRE) != EBufferNodeState::EMPTY)
+            {
+                if(TMaxThroughput)
+                {
+                    SPIN_LOOP_PAUSE();
+                }
+            }
+            QueueIndex = NewElement;
+            State.store(EBufferNodeState::FULL, RELEASE);
         }
         
         /* Likely to succeed on first iteration. */
@@ -335,7 +343,7 @@ protected:
         {
             EBufferNodeState Expected = EBufferNodeState::EMPTY;
             if(State.compare_exchange_strong(
-                Expected, EBufferNodeState::LOADING,
+                Expected, EBufferNodeState::STORING,
                 ACQUIRE, RELAXED))
             {
                 QueueIndex = NewElement;
@@ -357,7 +365,16 @@ protected:
     {
         if(TSPSC)
         {
-            return {};
+            while(State.load(ACQUIRE) != EBufferNodeState::FULL)
+            {
+                if(TMaxThroughput)
+                {
+                    SPIN_LOOP_PAUSE();
+                }
+            }
+            const FElementType Element = QueueIndex;
+            State.store(EBufferNodeState::EMPTY, RELEASE);
+            return Element;
         }
         
         /* Likely to succeed on first iteration. */
@@ -558,25 +575,33 @@ protected:
     {
         if(TSPSC)
         {
-            return;
+            while(QueueIndex.load(RELAXED) != TNil)
+            {
+                if(TMaxThroughput)
+                {
+                    SPIN_LOOP_PAUSE();
+                }
+            }
+            QueueIndex.store(NewElement, RELEASE);
         }
-
-        
-        for(;;)
+        else
         {
-            FElementType Expected = TNil;
-            if(QueueIndex.compare_exchange_strong(Expected, NewElement,
-                RELEASE, RELAXED))
+            for(;;)
             {
-                return;
-            }
+                FElementType Expected = TNil;
+                if(QueueIndex.compare_exchange_strong(Expected, NewElement,
+                    RELEASE, RELAXED))
+                {
+                    return;
+                }
 
-            // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
-            do
-            {
-                SPIN_LOOP_PAUSE();
+                // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
+                do
+                {
+                    SPIN_LOOP_PAUSE();
+                }
+                while (TMaxThroughput && QueueIndex.load(RELAXED) != TNil);
             }
-            while (TMaxThroughput && QueueIndex.load(RELAXED) != TNil);
         }
     }
 
@@ -584,23 +609,37 @@ protected:
     {
         if(TSPSC)
         {
-            return {};
+            for(;;)
+            {
+                FElementType Element = QueueIndex.load(RELAXED);
+                if(Element != TNil)
+                {
+                    QueueIndex.store(TNil, RELEASE);
+                    return Element;
+                }
+                if(TMaxThroughput)
+                {
+                    SPIN_LOOP_PAUSE();
+                }
+            }
         }
-
-        for(;;)
+        else
         {
-            FElementType Element = QueueIndex.exchange(TNil, RELEASE);
-            if(Element != TNil)
+            for(;;)
             {
-                return Element;
-            }
+                FElementType Element = QueueIndex.exchange(TNil, RELEASE);
+                if(Element != TNil)
+                {
+                    return Element;
+                }
 
-            // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
-            do
-            {
-                SPIN_LOOP_PAUSE();
+                // Do speculative loads while busy-waiting to avoid broadcasting RFO messages.
+                do
+                {
+                    SPIN_LOOP_PAUSE();
+                }
+                while (TMaxThroughput && QueueIndex.load(RELAXED) == TNil);
             }
-            while (TMaxThroughput && QueueIndex.load(RELAXED) == TNil);
         }
     }
 };
@@ -663,16 +702,72 @@ public:
     }
 };
 
-/*
-template<typename T, uint TQueueSize, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
-class CACHE_ALIGN FBoundedCircularAtomicQueueHeap : public FBoundedCircularAtomicQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
-{
 
+template<typename T, uint TQueueSize, T TNil = T{}, bool TTotalOrder = true, bool TMaxThroughput = true, bool TSPSC = false>
+class CACHE_ALIGN TBoundedCircularAtomicQueueHeap : public TBoundedCircularAtomicQueueBase<T, TQueueSize, TTotalOrder, TMaxThroughput, TSPSC>
+{
+    using TQueueBaseTypeCommon  = TBoundedQueueCommon<T, TQueueSize, TTotalOrder>;
+    using TQueueBaseType        = TBoundedCircularAtomicQueueBase<T, TQueueSize, TNil, TTotalOrder, TMaxThroughput, TSPSC>;
+    using FElementType          = T;
+
+    static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
+    static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
+    static constexpr int                        ShuffleBits = GetIndexShuffleBits<RoundedSize,
+                                                    PLATFORM_CACHE_LINE_SIZE / TypeSize>::Value;
+    static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
+
+    CACHE_ALIGN std::atomic<FElementType>       *CircularBuffer;
+
+public:
+    TBoundedCircularAtomicQueueHeap() noexcept
+        : TQueueBaseType(),
+        CircularBuffer(static_cast<std::atomic<FElementType>*>(
+            calloc(RoundedSize, TypeSize)))
+    {
+        for(uint i = 0; i < RoundedSize; ++i)
+        {
+            CircularBuffer[i].store(TNil, RELAXED);
+        }
+    }
+    
+    virtual ~TBoundedCircularAtomicQueueHeap() noexcept override
+    {
+        if(CircularBuffer)
+        {
+            free(CircularBuffer);
+        }
+    }
+
+    TBoundedCircularAtomicQueueHeap(const TBoundedCircularAtomicQueueHeap& other)                   = delete;
+    TBoundedCircularAtomicQueueHeap& operator=(const TBoundedCircularAtomicQueueHeap& other)        = delete;
+    
+    virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
+        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        TQueueBaseType::PushBase(NewElement, Element);
+    }
+    
+    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
+        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        return TQueueBaseType::PopBase(Element);
+    }
+    
+    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        return TQueueBaseTypeCommon::TryPush([this, &NewElement](){ Push(NewElement); });
+    }
+    
+    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override
+    {
+        return TQueueBaseTypeCommon::TryPop([this, &OutElement](){ OutElement = Pop(); });
+    }
 };
 
 //////////////////////// END ATOMIC QUEUE VERSIONS //////////////////////////
 
-*/
 
 #undef CACHE_ALIGN
 #undef QUEUE_PADDING_BYTES
