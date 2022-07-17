@@ -50,87 +50,92 @@ typedef unsigned int uint;
 #define CACHE_ALIGN alignas(PLATFORM_CACHE_LINE_SIZE)
 #define Q_NOEXCEPT_ENABLED true
 
-template<size_t TElementsPerCacheLine> struct GetCacheLineIndexBits { static int constexpr value = 0; };
-template<> struct GetCacheLineIndexBits<256> { static int constexpr Value = 8; };
-template<> struct GetCacheLineIndexBits<128> { static int constexpr Value = 7; };
-template<> struct GetCacheLineIndexBits< 64> { static int constexpr Value = 6; };
-template<> struct GetCacheLineIndexBits< 32> { static int constexpr Value = 5; };
-template<> struct GetCacheLineIndexBits< 16> { static int constexpr Value = 4; };
-template<> struct GetCacheLineIndexBits<  8> { static int constexpr Value = 3; };
-template<> struct GetCacheLineIndexBits<  4> { static int constexpr Value = 2; };
-template<> struct GetCacheLineIndexBits<  2> { static int constexpr Value = 1; };
-
-template<uint TArraySize, size_t TElementsPerCacheLine, bool TUnused = false>
-struct GetIndexShuffleBits
+namespace AtomicQueue
 {
-    static constexpr int Bits = GetCacheLineIndexBits<TElementsPerCacheLine>::Value;
-    static constexpr uint MinSize = 1U << (Bits * 2);
-    static constexpr int Value = TArraySize < MinSize ? 0 : Bits;
-};
+    namespace Utils
+    {
+        template<uint TElementsPerCacheLine> struct GetCacheLineIndexBits { static int constexpr value = 0; };
+        template<> struct GetCacheLineIndexBits<256> { static int constexpr Value = 8; };
+        template<> struct GetCacheLineIndexBits<128> { static int constexpr Value = 7; };
+        template<> struct GetCacheLineIndexBits< 64> { static int constexpr Value = 6; };
+        template<> struct GetCacheLineIndexBits< 32> { static int constexpr Value = 5; };
+        template<> struct GetCacheLineIndexBits< 16> { static int constexpr Value = 4; };
+        template<> struct GetCacheLineIndexBits<  8> { static int constexpr Value = 3; };
+        template<> struct GetCacheLineIndexBits<  4> { static int constexpr Value = 2; };
+        template<> struct GetCacheLineIndexBits<  2> { static int constexpr Value = 1; };
 
-template<uint TArraySize, size_t TElementsPerCacheLine>
-struct GetIndexShuffleBits<TArraySize, TElementsPerCacheLine>
-{
-    static constexpr int Value = 0;
-};
+        template<uint TArraySize, uint TElementsPerCacheLine, bool TUnused = false>
+        struct GetIndexShuffleBits
+        {
+            static constexpr int Bits = GetCacheLineIndexBits<TElementsPerCacheLine>::Value;
+            static constexpr uint MinSize = 1U << (Bits * 2);
+            static constexpr int Value = TArraySize < MinSize ? 0 : Bits;
+        };
 
-template<uint TBits>
-constexpr uint RemapCursorWithMix(const uint CursorIndex, const uint Mix) noexcept
-{
-    return CursorIndex ^ Mix ^ (Mix << TBits);
-}
+        template<uint TArraySize, uint TElementsPerCacheLine>
+        struct GetIndexShuffleBits<TArraySize, TElementsPerCacheLine>
+        {
+            static constexpr int Value = 0;
+        };
 
-/**
- * Multiple writers/readers contend on the same cache line when storing/loading elements at
- * subsequent indexes, aka false sharing. For power of 2 ring buffer size it is possible to re-map
- * the index in such a way that each subsequent element resides on another cache line, which
- * minimizes contention. This is done by swapping the lowest order N bits (which are the index of
- * the element within the cache line) with the next N bits (which are the index of the cache line)
- * of the element index.
- *
- * @cite https://graphics.stanford.edu/~seander/bithacks.html#SwappingBitsXOR
- * @cite https://stackoverflow.com/questions/12363715/swapping-individual-bits-with-xor
- */
-template<uint TBits>
-constexpr uint RemapCursor(const uint CursorIndex) noexcept
-{
-    return RemapCursorWithMix<TBits>(
-        CursorIndex, ((CursorIndex ^ (CursorIndex >> TBits)) & ((1U << TBits) - 1)));
-}
+        template<uint TBits>
+        constexpr uint RemapCursorWithMix(const uint CursorIndex, const uint Mix) noexcept
+        {
+            return CursorIndex ^ Mix ^ (Mix << TBits);
+        }
 
-constexpr uint RemapCursor(const uint CursorIndex) noexcept
-{
-    return CursorIndex;
-}
+        /**
+         * Multiple writers/readers contend on the same cache line when storing/loading elements at
+         * subsequent indexes, aka false sharing. For power of 2 ring buffer size it is possible to re-map
+         * the index in such a way that each subsequent element resides on another cache line, which
+         * minimizes contention. This is done by swapping the lowest order N bits (which are the index of
+         * the element within the cache line) with the next N bits (which are the index of the cache line)
+         * of the element index.
+         *
+         * @cite https://graphics.stanford.edu/~seander/bithacks.html#SwappingBitsXOR
+         * @cite https://stackoverflow.com/questions/12363715/swapping-individual-bits-with-xor
+         */
+        template<uint TBits>
+        constexpr uint RemapCursor(const uint CursorIndex) noexcept
+        {
+            return RemapCursorWithMix<TBits>(
+                CursorIndex, ((CursorIndex ^ (CursorIndex >> TBits)) & ((1U << TBits) - 1)));
+        }
 
-template<typename T, uint TBits>
-constexpr T& MapElement(T* Elements, const uint CursorIndex) noexcept
-{
-    return Elements[RemapCursor<TBits>(CursorIndex)];
-}
+        constexpr uint RemapCursor(const uint CursorIndex) noexcept
+        {
+            return CursorIndex;
+        }
 
-constexpr uint32 RoundQueueSizeUpToNearestPowerOfTwo(uint32 A) noexcept
-{
-    --A;
-    A |= A >> 1; A |= A >> 2; A |= A >> 4; A |= A >> 8; A |= A >> 16;
-    ++A;
-    
-    return A;
-}
+        template<typename T, uint TBits>
+        constexpr T& MapElement(T* Elements, const uint CursorIndex) noexcept
+        {
+            return Elements[RemapCursor<TBits>(CursorIndex)];
+        }
 
-constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(uint64 A) noexcept
-{
-    --A;
-    A |= A >> 1; A |= A >> 2; A |= A >> 4; A |= A >> 8; A |= A >> 16; A |= A >> 32;
-    ++A;
-    
-    return A;
-}
+        constexpr uint32 RoundQueueSizeUpToNearestPowerOfTwo(uint32 A) noexcept
+        {
+            --A;
+            A |= A >> 1; A |= A >> 2; A |= A >> 4; A |= A >> 8; A |= A >> 16;
+            ++A;
+            
+            return A;
+        }
 
-constexpr std::memory_order ACQUIRE     = std::memory_order_acquire;
-constexpr std::memory_order RELEASE     = std::memory_order_release;
-constexpr std::memory_order RELAXED     = std::memory_order_relaxed;
-constexpr std::memory_order SEQ_CONST   = std::memory_order_seq_cst;
+        constexpr uint64 RoundQueueSizeUpToNearestPowerOfTwo(uint64 A) noexcept
+        {
+            --A;
+            A |= A >> 1; A |= A >> 2; A |= A >> 4; A |= A >> 8; A |= A >> 16; A |= A >> 32;
+            ++A;
+            
+            return A;
+        }
+
+        constexpr std::memory_order ACQUIRE     = std::memory_order_acquire;
+        constexpr std::memory_order RELEASE     = std::memory_order_release;
+        constexpr std::memory_order RELAXED     = std::memory_order_relaxed;
+        constexpr std::memory_order SEQ_CONST   = std::memory_order_seq_cst;
+    } // namespace Utils
 
 /**
  * @biref Common base type for creating bounded queues.
@@ -144,12 +149,13 @@ class CACHE_ALIGN TBoundedQueueCommon
     static_assert(TQueueSize > 0,                                              "Queue too small!");
     static_assert(TQueueSize < (1U << ((sizeof(uint) * 8) - 1)) - 1,           "Queue too large!");
     
-    static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? SEQ_CONST : ACQUIRE;
+    static constexpr std::memory_order FetchAddMemoryOrder = TTotalOrder ? Utils::SEQ_CONST : Utils::ACQUIRE;
 
     using FElementType      = T;
+
     
 protected:
-    static constexpr uint   RoundedSize = RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
+    static constexpr uint   RoundedSize = Utils::RoundQueueSizeUpToNearestPowerOfTwo(TQueueSize);
     static constexpr uint   IndexMask = RoundedSize - 1;
     
 public:
@@ -162,26 +168,26 @@ public:
     virtual ~TBoundedQueueCommon() noexcept(Q_NOEXCEPT_ENABLED) = default;
 
     TBoundedQueueCommon(const TBoundedQueueCommon& Other) noexcept(Q_NOEXCEPT_ENABLED)
-        : ProducerCursor(Other.ProducerCursor.load(RELAXED)),
-        ConsumerCursor(Other.ConsumerCursor.load(RELAXED))
+        : ProducerCursor(Other.ProducerCursor.load(Utils::RELAXED)),
+        ConsumerCursor(Other.ConsumerCursor.load(Utils::RELAXED))
     {
     }
     
     TBoundedQueueCommon& operator=(const TBoundedQueueCommon& Other) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        ProducerCursor.store(Other.ProducerCursor.load(RELAXED), RELAXED);
-        ConsumerCursor.store(Other.ConsumerCursor.load(RELAXED), RELAXED);
+        ProducerCursor.store(Other.ProducerCursor.load(Utils::RELAXED), Utils::RELAXED);
+        ConsumerCursor.store(Other.ConsumerCursor.load(Utils::RELAXED), Utils::RELAXED);
         return *this;
     }
 
     void Swap(const TBoundedQueueCommon& Other) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const uint ThisProducerCursor = ProducerCursor.load(RELAXED);
-        const uint ThisConsumerCursor = ConsumerCursor.load(RELAXED);
-        ProducerCursor.store(Other.ProducerCursor.load(RELAXED), RELAXED);
-        ConsumerCursor.store(Other.ConsumerCursor.load(RELAXED), RELAXED);
-        Other.ProducerCursor.store(ThisProducerCursor, RELAXED);
-        Other.ConsumerCursor.store(ThisConsumerCursor, RELAXED);
+        const uint ThisProducerCursor = ProducerCursor.load(Utils::RELAXED);
+        const uint ThisConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
+        ProducerCursor.store(Other.ProducerCursor.load(Utils::RELAXED), Utils::RELAXED);
+        ConsumerCursor.store(Other.ConsumerCursor.load(Utils::RELAXED), Utils::RELAXED);
+        Other.ProducerCursor.store(ThisProducerCursor, Utils::RELAXED);
+        Other.ConsumerCursor.store(ThisConsumerCursor, Utils::RELAXED);
     }
     
 protected:
@@ -190,8 +196,8 @@ protected:
     {
         if(TSPSC)
         {
-            const uint Cursor = ProducerCursor.load(RELAXED);
-            ProducerCursor.store(Cursor + 1, RELAXED);
+            const uint Cursor = ProducerCursor.load(Utils::RELAXED);
+            ProducerCursor.store(Cursor + 1, Utils::RELAXED);
             return Cursor;
         }
         
@@ -203,8 +209,8 @@ protected:
     {
         if(TSPSC)
         {
-            const uint Cursor = ConsumerCursor.load(RELAXED);
-            ConsumerCursor.store(Cursor + 1, RELAXED);
+            const uint Cursor = ConsumerCursor.load(Utils::RELAXED);
+            ConsumerCursor.store(Cursor + 1, Utils::RELAXED);
             return Cursor;
         }
         
@@ -244,16 +250,16 @@ public:
 
     FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const uint CurrentProducerCursor = ProducerCursor.load(RELAXED);
-        const uint CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
+        const uint CurrentProducerCursor = ProducerCursor.load(Utils::RELAXED);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
 
         return (CurrentProducerCursor + 1) == CurrentConsumerCursor;
     }
     
     FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        const uint CurrentProducerCursor = ProducerCursor.load(RELAXED);
-        const uint CurrentConsumerCursor = ConsumerCursor.load(RELAXED);
+        const uint CurrentProducerCursor = ProducerCursor.load(Utils::RELAXED);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
 
         return CurrentProducerCursor == CurrentConsumerCursor;
     }
@@ -261,7 +267,7 @@ public:
     FORCEINLINE uint Num() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         // tail_ can be greater than head_ because of consumers doing pop, rather that try_pop, when the queue is empty.
-        const int64 Difference = ProducerCursor.load(RELAXED) - ConsumerCursor.load(RELAXED);
+        const int64 Difference = ProducerCursor.load(Utils::RELAXED) - ConsumerCursor.load(Utils::RELAXED);
         
         return Difference > 0 ? Difference : 0;
     }
@@ -327,7 +333,7 @@ protected:
     {
         if(TSPSC)
         {
-            while(State.load(ACQUIRE) != EBufferNodeState::EMPTY)
+            while(State.load(Utils::ACQUIRE) != EBufferNodeState::EMPTY)
             {
                 if(TMaxThroughput)
                 {
@@ -335,7 +341,7 @@ protected:
                 }
             }
             QueueIndex = NewElement;
-            State.store(EBufferNodeState::FULL, RELEASE);
+            State.store(EBufferNodeState::FULL, Utils::RELEASE);
         }
         
         /* Likely to succeed on first iteration. */
@@ -344,10 +350,10 @@ protected:
             EBufferNodeState Expected = EBufferNodeState::EMPTY;
             if(State.compare_exchange_strong(
                 Expected, EBufferNodeState::STORING,
-                ACQUIRE, RELAXED))
+                Utils::ACQUIRE, Utils::RELAXED))
             {
                 QueueIndex = NewElement;
-                State.store(EBufferNodeState::FULL, RELEASE);
+                State.store(EBufferNodeState::FULL, Utils::RELEASE);
                 return;
             }
         
@@ -356,7 +362,7 @@ protected:
             {
                 SPIN_LOOP_PAUSE();
             }
-            while(TMaxThroughput && State.load(RELAXED) != EBufferNodeState::EMPTY);
+            while(TMaxThroughput && State.load(Utils::RELAXED) != EBufferNodeState::EMPTY);
         }
     }
 
@@ -365,7 +371,7 @@ protected:
     {
         if(TSPSC)
         {
-            while(State.load(ACQUIRE) != EBufferNodeState::FULL)
+            while(State.load(Utils::ACQUIRE) != EBufferNodeState::FULL)
             {
                 if(TMaxThroughput)
                 {
@@ -373,7 +379,7 @@ protected:
                 }
             }
             const FElementType Element = QueueIndex;
-            State.store(EBufferNodeState::EMPTY, RELEASE);
+            State.store(EBufferNodeState::EMPTY, Utils::RELEASE);
             return Element;
         }
         
@@ -383,9 +389,9 @@ protected:
             EBufferNodeState Expected = EBufferNodeState::FULL;
             if(State.compare_exchange_strong(
                 Expected, EBufferNodeState::LOADING,
-                ACQUIRE, RELAXED))
+                Utils::ACQUIRE, Utils::RELAXED))
             {
-                State.store(EBufferNodeState::EMPTY, RELEASE);
+                State.store(EBufferNodeState::EMPTY, Utils::RELEASE);
                 return QueueIndex;
             }
 
@@ -394,7 +400,7 @@ protected:
             {
                 SPIN_LOOP_PAUSE();
             }
-            while(TMaxThroughput && State.load(RELAXED) != EBufferNodeState::FULL);
+            while(TMaxThroughput && State.load(Utils::RELAXED) != EBufferNodeState::FULL);
         }
     }
 };
@@ -413,7 +419,7 @@ class CACHE_ALIGN TBoundedCircularQueue : public TBoundedCircularQueueBase<T, TQ
     static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
     static constexpr uint                       StateSize = TQueueBaseType::StateSize;
     static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                        ShuffleBits = GetIndexShuffleBits<TQueueSize,
+    static constexpr int                        ShuffleBits = Utils::GetIndexShuffleBits<TQueueSize,
                                                     PLATFORM_CACHE_LINE_SIZE / StateSize>::Value;
     static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
 
@@ -436,14 +442,14 @@ public:
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
-        const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        const uint Index = Utils::RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         TQueueBaseType::PushBase(NewElement, CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
-        const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        const uint Index = Utils::RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         return TQueueBaseType::PopBase(CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
@@ -469,7 +475,7 @@ class CACHE_ALIGN TBoundedCircularQueueHeap : public TBoundedCircularQueueBase<T
     static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
     static constexpr uint                       StateSize = TQueueBaseType::StateSize;
     static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                        ShuffleBits = GetCacheLineIndexBits<
+    static constexpr int                        ShuffleBits = Utils::GetCacheLineIndexBits<
                                                     PLATFORM_CACHE_LINE_SIZE / StateSize>::Value;
     static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
     
@@ -480,11 +486,11 @@ public:
     TBoundedCircularQueueHeap() noexcept
         : TQueueBaseType(),
         CircularBuffer(static_cast<FElementType*>(
-            calloc(TQueueSize, sizeof(FElementType)))),
+            calloc(RoundedSize, sizeof(FElementType)))),
         CircularBufferStates(static_cast<std::atomic<EBufferNodeState>*>(
-            calloc(TQueueSize, sizeof(std::atomic<EBufferNodeState>))))
+            calloc(RoundedSize, sizeof(std::atomic<EBufferNodeState>))))
     {
-        for(uint i = 0; i < TQueueSize; ++i)
+        for(uint i = 0; i < RoundedSize; ++i)
         {
             CircularBuffer[i]       = TNil;
             CircularBufferStates[i] = EBufferNodeState::Empty;
@@ -509,14 +515,14 @@ public:
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
-        const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        const uint Index = Utils::RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         TQueueBaseType::PushBase(NewElement, CircularBufferStates[Index], CircularBuffer[Index]);
     }
 
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
-        const uint Index = RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
+        const uint Index = Utils::RemapCursor<ShuffleBits>(ThisIndex & IndexMask);
         return TQueueBaseType::PopBase(CircularBufferStates[Index], CircularBuffer[Index]);
     }
     
@@ -575,14 +581,14 @@ protected:
     {
         if(TSPSC)
         {
-            while(QueueIndex.load(RELAXED) != TNil)
+            while(QueueIndex.load(Utils::RELAXED) != TNil)
             {
                 if(TMaxThroughput)
                 {
                     SPIN_LOOP_PAUSE();
                 }
             }
-            QueueIndex.store(NewElement, RELEASE);
+            QueueIndex.store(NewElement, Utils::RELEASE);
         }
         else
         {
@@ -590,7 +596,7 @@ protected:
             {
                 FElementType Expected = TNil;
                 if(QueueIndex.compare_exchange_strong(Expected, NewElement,
-                    RELEASE, RELAXED))
+                    Utils::RELEASE, Utils::RELAXED))
                 {
                     return;
                 }
@@ -600,7 +606,7 @@ protected:
                 {
                     SPIN_LOOP_PAUSE();
                 }
-                while (TMaxThroughput && QueueIndex.load(RELAXED) != TNil);
+                while (TMaxThroughput && QueueIndex.load(Utils::RELAXED) != TNil);
             }
         }
     }
@@ -611,10 +617,10 @@ protected:
         {
             for(;;)
             {
-                FElementType Element = QueueIndex.load(RELAXED);
+                FElementType Element = QueueIndex.load(Utils::RELAXED);
                 if(Element != TNil)
                 {
-                    QueueIndex.store(TNil, RELEASE);
+                    QueueIndex.store(TNil, Utils::RELEASE);
                     return Element;
                 }
                 if(TMaxThroughput)
@@ -627,7 +633,7 @@ protected:
         {
             for(;;)
             {
-                FElementType Element = QueueIndex.exchange(TNil, RELEASE);
+                FElementType Element = QueueIndex.exchange(TNil, Utils::RELEASE);
                 if(Element != TNil)
                 {
                     return Element;
@@ -638,7 +644,7 @@ protected:
                 {
                     SPIN_LOOP_PAUSE();
                 }
-                while (TMaxThroughput && QueueIndex.load(RELAXED) == TNil);
+                while (TMaxThroughput && QueueIndex.load(Utils::RELAXED) == TNil);
             }
         }
     }
@@ -653,7 +659,7 @@ class CACHE_ALIGN TBoundedCircularAtomicQueue : public TBoundedCircularAtomicQue
 
     static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
     static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                        ShuffleBits = GetIndexShuffleBits<RoundedSize,
+    static constexpr int                        ShuffleBits = Utils::GetIndexShuffleBits<RoundedSize,
                                                     PLATFORM_CACHE_LINE_SIZE / TypeSize>::Value;
     static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
 
@@ -667,7 +673,7 @@ public:
         {
             for(uint i = 0; i < RoundedSize; ++i)
             {
-               CircularBuffer[i].store(TNil, RELAXED);
+               CircularBuffer[i].store(TNil, Utils::RELAXED);
             }
         }
     }
@@ -680,14 +686,14 @@ public:
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
-        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        std::atomic<FElementType>& Element = Utils::MapElement<FElementType, ShuffleBits>(CircularBuffer, ThisIndex & IndexMask);
         TQueueBaseType::PushBase(NewElement, Element);
     }
     
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
-        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        std::atomic<FElementType>& Element = Utils::MapElement<FElementType, ShuffleBits>(CircularBuffer, ThisIndex & IndexMask);
         return TQueueBaseType::PopBase(Element);
     }
     
@@ -712,7 +718,7 @@ class CACHE_ALIGN TBoundedCircularAtomicQueueHeap : public TBoundedCircularAtomi
 
     static constexpr uint                       TypeSize = TQueueBaseType::TypeSize;
     static constexpr uint                       RoundedSize = TQueueBaseType::RoundedSize;
-    static constexpr int                        ShuffleBits = GetIndexShuffleBits<RoundedSize,
+    static constexpr int                        ShuffleBits = Utils::GetIndexShuffleBits<RoundedSize,
                                                     PLATFORM_CACHE_LINE_SIZE / TypeSize>::Value;
     static constexpr uint                       IndexMask = TQueueBaseType::IndexMask;
 
@@ -726,7 +732,7 @@ public:
     {
         for(uint i = 0; i < RoundedSize; ++i)
         {
-            CircularBuffer[i].store(TNil, RELAXED);
+            CircularBuffer[i].store(TNil, Utils::RELAXED);
         }
     }
     
@@ -744,14 +750,14 @@ public:
     virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementProducerCursor<TSPSC>();
-        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        std::atomic<FElementType>& Element = Utils::MapElement<FElementType, ShuffleBits>(CircularBuffer, ThisIndex & IndexMask);
         TQueueBaseType::PushBase(NewElement, Element);
     }
     
     virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override
     {
         const uint ThisIndex = TQueueBaseType::template IncrementConsumerCursor<TSPSC>();
-        std::atomic<FElementType>& Element = MapElement(CircularBuffer, ThisIndex & IndexMask);
+        std::atomic<FElementType>& Element = Utils::MapElement<FElementType, ShuffleBits>(CircularBuffer, ThisIndex & IndexMask);
         return TQueueBaseType::PopBase(Element);
     }
     
@@ -765,6 +771,8 @@ public:
         return TQueueBaseTypeCommon::TryPop([this, &OutElement](){ OutElement = Pop(); });
     }
 };
+    
+} // AtomicQueue namespace
 
 //////////////////////// END ATOMIC QUEUE VERSIONS //////////////////////////
 
