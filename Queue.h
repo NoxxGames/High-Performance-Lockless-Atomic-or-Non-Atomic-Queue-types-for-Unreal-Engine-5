@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 // #include <cstdio>
+#include <assert.h>
 #include <cstdlib>
 
 #include <atomic>
@@ -163,6 +164,7 @@ public:
         : ProducerCursor{InProducerCursor},
         ConsumerCursor{InConsumerCursor}
     {
+        assert(InProducerCursor > InConsumerCursor);
     }
     
     virtual ~TBoundedQueueCommon() noexcept(Q_NOEXCEPT_ENABLED) = default;
@@ -238,10 +240,12 @@ protected:
     }
     
 public:
-    virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)      = 0;
-    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED)                             = 0;
-    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)   = 0;
-    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)          = 0;
+    virtual FORCEINLINE void Push(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)              = 0;
+    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED)                                     = 0;
+    virtual FORCEINLINE void PushLowPriority(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)   = 0;
+    virtual FORCEINLINE FElementType PopLowPriority() noexcept(Q_NOEXCEPT_ENABLED)                          = 0;
+    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED)           = 0;
+    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED)                  = 0;
     
     FORCEINLINE uint Size() const noexcept(Q_NOEXCEPT_ENABLED)
     {
@@ -252,7 +256,6 @@ public:
     {
         const uint CurrentProducerCursor = ProducerCursor.load(Utils::RELAXED);
         const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
-
         return (CurrentProducerCursor + 1) == CurrentConsumerCursor;
     }
     
@@ -260,15 +263,13 @@ public:
     {
         const uint CurrentProducerCursor = ProducerCursor.load(Utils::RELAXED);
         const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
-
         return CurrentProducerCursor == CurrentConsumerCursor;
     }
 
     FORCEINLINE uint Num() const noexcept(Q_NOEXCEPT_ENABLED)
     {
-        // tail_ can be greater than head_ because of consumers doing pop, rather that try_pop, when the queue is empty.
+        // ConsumerCursor can be greater than ProducerCursor because of consumers doing Pop, rather than TryPop, when the queue is empty.
         const int64 Difference = ProducerCursor.load(Utils::RELAXED) - ConsumerCursor.load(Utils::RELAXED);
-        
         return Difference > 0 ? Difference : 0;
     }
 
@@ -365,7 +366,7 @@ protected:
             while(TMaxThroughput && State.load(Utils::RELAXED) != EBufferNodeState::EMPTY);
         }
     }
-
+    
     static FORCEINLINE FElementType PopBase(
         std::atomic<EBufferNodeState>& State, FElementType& QueueIndex) noexcept(Q_NOEXCEPT_ENABLED)
     {
@@ -570,10 +571,10 @@ public:
     TBoundedCircularAtomicQueueBase(TBoundedCircularAtomicQueueBase&) noexcept               = delete;
     TBoundedCircularAtomicQueueBase& operator=(TBoundedCircularAtomicQueueBase&) noexcept    = delete;
 
-    virtual FORCEINLINE void Push(const FElementType&NewElement) noexcept(true) override        = 0;
-    virtual FORCEINLINE FElementType Pop() noexcept(true) override                              = 0;
-    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(true) override    = 0;
-    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(true) override           = 0;
+    virtual FORCEINLINE void Push(const FElementType&NewElement) noexcept(Q_NOEXCEPT_ENABLED) override        = 0;
+    virtual FORCEINLINE FElementType Pop() noexcept(Q_NOEXCEPT_ENABLED) override                              = 0;
+    virtual FORCEINLINE bool TryPush(const FElementType& NewElement) noexcept(Q_NOEXCEPT_ENABLED) override    = 0;
+    virtual FORCEINLINE bool TryPop(FElementType& OutElement) noexcept(Q_NOEXCEPT_ENABLED) override           = 0;
 
 protected:
     static FORCEINLINE void PushBase(const FElementType& NewElement,
