@@ -221,7 +221,7 @@ protected:
 
     FORCEINLINE bool TryPushBase(const std::function<void()>& DerivedPushFunction) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        if(this->Full())
+        if(this->IsFull())
         {
             return false;
         }
@@ -231,7 +231,7 @@ protected:
 
     FORCEINLINE bool TryPopBase(const std::function<void()>& DerivedPopFunction) noexcept(Q_NOEXCEPT_ENABLED)
     {
-        if(this->Empty())
+        if(this->IsEmpty())
         {
             return false;
         }
@@ -252,26 +252,42 @@ public:
         return RoundedSize;
     }
 
-    FORCEINLINE bool Full() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool WasFull() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         const uint CurrentProducerCursor = ProducerCursor.load(Utils::RELAXED);
         const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
         return (CurrentProducerCursor + 1) == CurrentConsumerCursor;
     }
     
-    FORCEINLINE bool Empty() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE bool WasEmpty() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         const uint CurrentProducerCursor = ProducerCursor.load(Utils::RELAXED);
         const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::RELAXED);
         return CurrentProducerCursor == CurrentConsumerCursor;
     }
 
-    FORCEINLINE uint Num() const noexcept(Q_NOEXCEPT_ENABLED)
+    FORCEINLINE uint WasNum() const noexcept(Q_NOEXCEPT_ENABLED)
     {
         // ConsumerCursor can be greater than ProducerCursor because of consumers doing Pop, rather than TryPop, when the queue is empty.
         const int64 Difference = ProducerCursor.load(Utils::RELAXED) - ConsumerCursor.load(Utils::RELAXED);
         return Difference > 0 ? Difference : 0;
     }
+
+private:
+    FORCEINLINE bool IsFull() const noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        const uint CurrentProducerCursor = ProducerCursor.load(Utils::ACQUIRE);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::ACQUIRE);
+        return (CurrentProducerCursor + 1) == CurrentConsumerCursor;
+    }
+
+    FORCEINLINE bool IsEmpty() const noexcept(Q_NOEXCEPT_ENABLED)
+    {
+        const uint CurrentProducerCursor = ProducerCursor.load(Utils::ACQUIRE);
+        const uint CurrentConsumerCursor = ConsumerCursor.load(Utils::ACQUIRE);
+        return CurrentProducerCursor == CurrentConsumerCursor;
+    }
+        
 
 protected:
     CACHE_ALIGN std::atomic<uint>   ProducerCursor;
